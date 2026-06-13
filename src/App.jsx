@@ -8,6 +8,8 @@ import {
   Hammer,
   Home,
   Lock,
+  Mic2,
+  Music,
   Pause,
   Play,
   RotateCcw,
@@ -58,6 +60,7 @@ import {
 } from "./game/gameLogic.js";
 
 let audioContext;
+let musicNodes;
 
 function readJson(key) {
   try {
@@ -92,34 +95,120 @@ function playSound(kind, enabled) {
     const AudioCtor = window.AudioContext || window.webkitAudioContext;
     if (!AudioCtor) return;
     audioContext ||= new AudioCtor();
-    const osc = audioContext.createOscillator();
-    const gain = audioContext.createGain();
+    if (audioContext.state === "suspended") audioContext.resume();
     const now = audioContext.currentTime;
     const map = {
-      place: [420, 0.035],
-      clear: [660, 0.08],
-      combo: [840, 0.11],
+      place: [[430, 560], 0.045, "triangle", 0.07],
+      clear: [[620, 850, 1120], 0.11, "sine", 0.08],
+      bigClear: [[240, 520, 920, 1380], 0.2, "triangle", 0.09],
+      combo: [[520, 760, 1040, 1480], 0.18, "sine", 0.1],
       bad: [140, 0.06],
-      reward: [760, 0.16],
+      reward: [[640, 820, 1040], 0.16, "sine", 0.08],
     };
-    const [freq, length] = map[kind] || map.place;
-    osc.type = kind === "bad" ? "sawtooth" : "sine";
-    osc.frequency.setValueAtTime(freq, now);
-    osc.frequency.exponentialRampToValueAtTime(freq * 1.6, now + length);
-    gain.gain.setValueAtTime(0.001, now);
-    gain.gain.exponentialRampToValueAtTime(0.08, now + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + length);
-    osc.connect(gain);
-    gain.connect(audioContext.destination);
-    osc.start(now);
-    osc.stop(now + length + 0.02);
+    const config = map[kind] || map.place;
+    if (kind === "bad") {
+      const osc = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(config[0], now);
+      osc.frequency.exponentialRampToValueAtTime(80, now + config[1]);
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.exponentialRampToValueAtTime(0.06, now + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + config[1]);
+      osc.connect(gain);
+      gain.connect(audioContext.destination);
+      osc.start(now);
+      osc.stop(now + config[1] + 0.02);
+      return;
+    }
+
+    const [notes, length, type, volume] = config;
+    notes.forEach((freq, index) => {
+      const osc = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      const start = now + index * Math.min(0.045, length / notes.length);
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, start);
+      osc.frequency.exponentialRampToValueAtTime(freq * 1.18, start + length);
+      gain.gain.setValueAtTime(0.001, start);
+      gain.gain.exponentialRampToValueAtTime(volume, start + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + length);
+      osc.connect(gain);
+      gain.connect(audioContext.destination);
+      osc.start(start);
+      osc.stop(start + length + 0.03);
+    });
   } catch {
     // Audio feedback is optional.
   }
 }
 
+function setMusic(enabled) {
+  if (typeof window === "undefined") return;
+  try {
+    if (!enabled) {
+      if (musicNodes) {
+        musicNodes.gain.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.18);
+        window.setTimeout(() => {
+          musicNodes?.oscA.stop();
+          musicNodes?.oscB.stop();
+          musicNodes = null;
+        }, 220);
+      }
+      return;
+    }
+
+    const AudioCtor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtor || musicNodes) return;
+    audioContext ||= new AudioCtor();
+    if (audioContext.state === "suspended") audioContext.resume();
+    const now = audioContext.currentTime;
+    const gain = audioContext.createGain();
+    const oscA = audioContext.createOscillator();
+    const oscB = audioContext.createOscillator();
+    oscA.type = "sine";
+    oscB.type = "triangle";
+    oscA.frequency.setValueAtTime(146.83, now);
+    oscB.frequency.setValueAtTime(220, now);
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.exponentialRampToValueAtTime(0.018, now + 0.3);
+    oscA.connect(gain);
+    oscB.connect(gain);
+    gain.connect(audioContext.destination);
+    oscA.start();
+    oscB.start();
+    musicNodes = { gain, oscA, oscB };
+  } catch {
+    musicNodes = null;
+  }
+}
+
+function speakPraise(text, enabled) {
+  if (!enabled || typeof window === "undefined" || !window.speechSynthesis || !text) return;
+  try {
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text.toLowerCase());
+    utterance.rate = 1.02;
+    utterance.pitch = 1.28;
+    utterance.volume = 0.42;
+    window.speechSynthesis.speak(utterance);
+  } catch {
+    // Voice feedback is optional.
+  }
+}
+
 function haptic(enabled, pattern = 18) {
   if (enabled && navigator.vibrate) navigator.vibrate(pattern);
+}
+
+function praiseLabel(lineCount, combo) {
+  if (combo >= 5) return "UNBELIEVABLE";
+  if (lineCount >= 4) return "AMAZING";
+  if (combo >= 4 || lineCount >= 3) return "EXCELLENT";
+  if (combo >= 3 || lineCount >= 2) return "AWESOME";
+  if (combo >= 2) return "GREAT";
+  if (lineCount >= 1) return "GOOD";
+  return "";
 }
 
 function ProgressBar({ value, max, label }) {
@@ -203,7 +292,14 @@ function Board({ board, boardRef, skinId, hover, clearMarks, activePower, onCell
       previewCells.add(`${hover.row + pieceRow}-${hover.col + pieceCol}`);
     });
   }
-  const clearCells = new Set(clearMarks.map(([row, col]) => `${row}-${col}`));
+  const clearCells = new Map(
+    clearMarks.map((mark) => {
+      const row = Array.isArray(mark) ? mark[0] : mark.row;
+      const col = Array.isArray(mark) ? mark[1] : mark.col;
+      const delay = Array.isArray(mark) ? 0 : mark.delay;
+      return [`${row}-${col}`, delay || 0];
+    }),
+  );
 
   return (
     <div
@@ -215,7 +311,8 @@ function Board({ board, boardRef, skinId, hover, clearMarks, activePower, onCell
         row.map((cell, colIndex) => {
           const key = `${rowIndex}-${colIndex}`;
           const preview = previewCells.has(key);
-          const clearing = clearCells.has(key);
+          const clearDelay = clearCells.get(key);
+          const clearing = clearDelay !== undefined;
           const cellSkin = cell ? getSkin(cell.skin) : selectedSkin;
           const color = cell ? cellSkin.swatches[cell.colorIndex % cellSkin.swatches.length] : undefined;
           return (
@@ -231,7 +328,10 @@ function Board({ board, boardRef, skinId, hover, clearMarks, activePower, onCell
                 activePower ? "tool-target" : "",
               ].join(" ")}
               key={key}
-              style={color ? { background: color } : undefined}
+              style={{
+                ...(color ? { background: color } : {}),
+                ...(clearing ? { "--clear-delay": `${clearDelay}ms` } : {}),
+              }}
               onPointerDown={(event) => {
                 if (!activePower) return;
                 event.preventDefault();
@@ -254,6 +354,7 @@ function GameScreen({
   clearMarks,
   particles,
   lastReward,
+  praise,
   drag,
   activePower,
   onBeginDrag,
@@ -290,6 +391,13 @@ function GameScreen({
         <StatPill icon={Coins} label="Coins" value={profile.coins.toLocaleString()} />
         <StatPill icon={Zap} label="Combo" value={run.combo ? `x${run.combo}` : "0"} />
       </section>
+
+      {run.combo > 0 && (
+        <div className="combo-meter" aria-live="polite">
+          <span>Combo streak</span>
+          <strong>x{run.combo}</strong>
+        </div>
+      )}
 
       <section className="level-strip">
         <div>
@@ -364,6 +472,12 @@ function GameScreen({
         </button>
       </section>
 
+      {activePower && (
+        <div className="tool-cue" aria-live="polite">
+          {activePower === "hammer" ? "Tap a filled cell" : "Tap the blast center"}
+        </div>
+      )}
+
       <section className="piece-tray" aria-label="Available pieces">
         {run.pieces.map((piece) => (
           <button
@@ -391,6 +505,7 @@ function GameScreen({
           <PiecePreview piece={drag.piece} skinId={profile.selectedSkin} compact />
         </div>
       )}
+      {praise && <PraiseFlash label={praise} />}
     </main>
   );
 }
@@ -564,8 +679,18 @@ function SettingsScreen({ profile, onBack, onToggleSetting, onResetProgress, con
       <section className="settings-list">
         <button className="setting-row" type="button" onClick={() => onToggleSetting("sound")}>
           {profile.settings.sound ? <Volume2 size={20} aria-hidden="true" /> : <VolumeX size={20} aria-hidden="true" />}
-          <span>Sound</span>
+          <span>Sound effects</span>
           <strong>{profile.settings.sound ? "On" : "Off"}</strong>
+        </button>
+        <button className="setting-row" type="button" onClick={() => onToggleSetting("voice")}>
+          <Mic2 size={20} aria-hidden="true" />
+          <span>Voice</span>
+          <strong>{profile.settings.voice ? "On" : "Off"}</strong>
+        </button>
+        <button className="setting-row" type="button" onClick={() => onToggleSetting("music")}>
+          <Music size={20} aria-hidden="true" />
+          <span>Music</span>
+          <strong>{profile.settings.music ? "On" : "Off"}</strong>
         </button>
         <button className="setting-row" type="button" onClick={() => onToggleSetting("haptics")}>
           <Smartphone size={20} aria-hidden="true" />
@@ -691,6 +816,11 @@ function ComboFlash({ label }) {
   return <div className="combo-flash">{label}</div>;
 }
 
+function PraiseFlash({ label }) {
+  if (!label) return null;
+  return <div className={`praise-flash intensity-${Math.min(4, Math.ceil(label.length / 4))}`}>{label}</div>;
+}
+
 function LevelFlash({ level }) {
   if (!level) return null;
   return <div className="level-flash">Level {level}</div>;
@@ -708,6 +838,7 @@ function App() {
   const [particles, setParticles] = useState([]);
   const [toast, setToast] = useState("");
   const [comboFlash, setComboFlash] = useState("");
+  const [praiseFlash, setPraiseFlash] = useState("");
   const [levelFlash, setLevelFlash] = useState(0);
   const [lastReward, setLastReward] = useState(null);
   const [chestState, setChestState] = useState(null);
@@ -715,9 +846,12 @@ function App() {
   const [clearing, setClearing] = useState(false);
   const [shake, setShake] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [audioUnlocked, setAudioUnlocked] = useState(false);
   const boardRef = useRef(null);
   const toastTimer = useRef(null);
   const rewardTimer = useRef(null);
+  const praiseTimer = useRef(null);
+  const audioUnlockedRef = useRef(false);
 
   const selectedSkin = useMemo(() => getSkin(profile.selectedSkin), [profile.selectedSkin]);
 
@@ -728,6 +862,17 @@ function App() {
   useEffect(() => {
     saveJson(STORAGE_KEYS.run, run);
   }, [run]);
+
+  useEffect(() => {
+    setMusic(Boolean(profile.settings.music && audioUnlocked));
+    return () => setMusic(false);
+  }, [profile.settings.music, audioUnlocked]);
+
+  function unlockAudio() {
+    audioUnlockedRef.current = true;
+    setAudioUnlocked(true);
+    if (audioContext?.state === "suspended") audioContext.resume();
+  }
 
   function notify(message) {
     setToast(message);
@@ -761,6 +906,14 @@ function App() {
     window.setTimeout(() => setComboFlash(""), 850);
   }
 
+  function flashPraise(label) {
+    if (!label) return;
+    setPraiseFlash(label);
+    window.clearTimeout(praiseTimer.current);
+    praiseTimer.current = window.setTimeout(() => setPraiseFlash(""), 1050);
+    speakPraise(label, profile.settings.voice && audioUnlockedRef.current);
+  }
+
   function triggerShake(strong = false) {
     setShake(true);
     haptic(profile.settings.haptics, strong ? [28, 30, 28] : 24);
@@ -780,6 +933,7 @@ function App() {
   }
 
   function handlePlacePiece(pieceId, row, col) {
+    unlockAudio();
     if (run.isOver || clearing || paused) return false;
     const piece = run.pieces.find((item) => item.id === pieceId);
     if (!piece || !canPlacePiece(run.board, piece, row, col)) {
@@ -823,21 +977,38 @@ function App() {
       window.setTimeout(() => setChestState({ reward: null }), 360);
     }
 
-    playSound(completed.count ? (reward.nextCombo >= 2 ? "combo" : "clear") : "place", profile.settings.sound);
+    const praise = praiseLabel(completed.count, reward.nextCombo);
+    playSound(
+      completed.count
+        ? completed.count > 1 || reward.nextCombo >= 3
+          ? "bigClear"
+          : reward.nextCombo >= 2
+            ? "combo"
+            : "clear"
+        : "place",
+      profile.settings.sound,
+    );
     showReward({ score: reward.score, coins: reward.coins, lines: completed.count });
     if (completed.count > 0) {
       setRun(baseRun);
       setClearing(true);
       const cleared = clearCompletedLines(placedBoard, completed);
-      setClearMarks(cleared.clearedCells);
-      addParticles(20 + completed.count * 14 + reward.nextCombo * 5);
+      setClearMarks(
+        cleared.clearedCells.map(([cellRow, cellCol]) => ({
+          row: cellRow,
+          col: cellCol,
+          delay: (cellRow + cellCol) * 14,
+        })),
+      );
+      addParticles(22 + completed.count * 16 + reward.nextCombo * 7);
       flashCombo(reward.nextCombo);
+      flashPraise(praise);
       triggerShake(completed.count > 1 || reward.nextCombo >= 2);
       window.setTimeout(() => {
         setClearMarks([]);
         finalizeRunAfterMove(baseRun, cleared.board, piecesAfterPlacement);
         setClearing(false);
-      }, 190);
+      }, 470);
     } else {
       finalizeRunAfterMove(baseRun, placedBoard, piecesAfterPlacement);
     }
@@ -845,6 +1016,7 @@ function App() {
   }
 
   function handleBeginDrag(event, piece) {
+    unlockAudio();
     if (piece.placed || run.isOver || clearing || paused) return;
     event.preventDefault();
     setActivePower(null);
@@ -888,6 +1060,7 @@ function App() {
   }, [drag, hover, run.board]);
 
   function startNewGame() {
+    unlockAudio();
     const nextRun = createRun();
     setRun(nextRun);
     setPaused(false);
@@ -906,6 +1079,7 @@ function App() {
   }
 
   function handlePowerup(powerupId) {
+    unlockAudio();
     if (run.isOver || clearing) return;
     if ((profile.powerups[powerupId] || 0) <= 0) {
       notify("Get more in shop");
@@ -938,6 +1112,7 @@ function App() {
   }
 
   function handleCellAction(row, col) {
+    unlockAudio();
     if (!activePower || clearing) return;
     const result = activePower === "hammer" ? removeCell(run.board, row, col) : clearArea(run.board, row, col);
     if (result.removed <= 0) {
@@ -974,6 +1149,7 @@ function App() {
   }
 
   function handleClaimMission(missionId) {
+    unlockAudio();
     const result = claimMission(profile, missionId);
     if (!result.claimed) {
       notify("Mission not ready");
@@ -985,6 +1161,7 @@ function App() {
   }
 
   function handleBuySkin(skinId) {
+    unlockAudio();
     const result = buySkin(profile, skinId);
     if (!result.purchased) {
       notify("Not enough coins");
@@ -996,6 +1173,7 @@ function App() {
   }
 
   function handleSelectSkin(skinId) {
+    unlockAudio();
     const result = selectSkin(profile, skinId);
     if (result.selected) {
       setProfile(result.profile);
@@ -1004,6 +1182,7 @@ function App() {
   }
 
   function handleBuyPowerup(powerupId) {
+    unlockAudio();
     const result = buyPowerup(profile, powerupId);
     if (!result.purchased) {
       notify("Not enough coins");
@@ -1015,10 +1194,12 @@ function App() {
   }
 
   function handleOpenChest() {
+    unlockAudio();
     setChestState({ reward: null });
   }
 
   function handleChestReward() {
+    unlockAudio();
     const result = openChest(profile);
     if (!result.opened) return;
     setProfile(result.profile);
@@ -1028,6 +1209,7 @@ function App() {
   }
 
   function toggleSetting(setting) {
+    unlockAudio();
     setProfile({
       ...profile,
       settings: {
@@ -1085,6 +1267,7 @@ function App() {
             clearMarks={clearMarks}
             particles={particles}
             lastReward={lastReward}
+            praise={praiseFlash}
             drag={drag}
             activePower={activePower}
             onBeginDrag={handleBeginDrag}

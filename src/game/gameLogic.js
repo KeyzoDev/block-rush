@@ -292,7 +292,7 @@ export function createInitialProfile(date = todayKey()) {
     selectedSkin: "classic",
     powerups: { hammer: 3, shuffle: 2, bomb: 1 },
     daily: createDailyState(date),
-    settings: { sound: true, haptics: true },
+    settings: { sound: true, voice: true, music: false, haptics: true },
   };
 }
 
