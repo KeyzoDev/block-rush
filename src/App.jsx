@@ -1,0 +1,1173 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  ArrowLeft,
+  Bomb,
+  Check,
+  Coins,
+  Gift,
+  Hammer,
+  Home,
+  Lock,
+  Pause,
+  Play,
+  RotateCcw,
+  Settings,
+  ShoppingBag,
+  Shuffle,
+  Smartphone,
+  Star,
+  Target,
+  Trophy,
+  Volume2,
+  VolumeX,
+  X,
+  Zap,
+} from "lucide-react";
+import {
+  BOARD_SIZE,
+  CHEST_MAX,
+  MISSION_DEFS,
+  POWERUPS,
+  SKINS,
+  STORAGE_KEYS,
+  applyGameProgress,
+  buyPowerup,
+  buySkin,
+  canAnyPieceFit,
+  canPlacePiece,
+  claimMission,
+  clearArea,
+  clearCompletedLines,
+  comboLabel,
+  createInitialProfile,
+  createRun,
+  findCompletedLines,
+  generateHand,
+  getPieceBounds,
+  getPlacementReward,
+  getSkin,
+  levelThreshold,
+  normalizeCells,
+  normalizeProfile,
+  openChest,
+  placePiece,
+  removeCell,
+  reviveRunFromStorage,
+  selectSkin,
+  spendPowerup,
+} from "./game/gameLogic.js";
+
+let audioContext;
+
+function readJson(key) {
+  try {
+    const value = window.localStorage.getItem(key);
+    return value ? JSON.parse(value) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveJson(key, value) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Storage can be blocked in private browsing; the game still runs in memory.
+  }
+}
+
+function getPointCell(boardElement, piece, point) {
+  if (!boardElement || !piece) return null;
+  const rect = boardElement.getBoundingClientRect();
+  const cell = rect.width / BOARD_SIZE;
+  const bounds = getPieceBounds(piece);
+  const row = Math.floor((point.y - rect.top) / cell - bounds.height / 2);
+  const col = Math.floor((point.x - rect.left) / cell - bounds.width / 2);
+  return { row, col };
+}
+
+function playSound(kind, enabled) {
+  if (!enabled || typeof window === "undefined") return;
+  try {
+    const AudioCtor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtor) return;
+    audioContext ||= new AudioCtor();
+    const osc = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    const now = audioContext.currentTime;
+    const map = {
+      place: [420, 0.035],
+      clear: [660, 0.08],
+      combo: [840, 0.11],
+      bad: [140, 0.06],
+      reward: [760, 0.16],
+    };
+    const [freq, length] = map[kind] || map.place;
+    osc.type = kind === "bad" ? "sawtooth" : "sine";
+    osc.frequency.setValueAtTime(freq, now);
+    osc.frequency.exponentialRampToValueAtTime(freq * 1.6, now + length);
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.exponentialRampToValueAtTime(0.08, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + length);
+    osc.connect(gain);
+    gain.connect(audioContext.destination);
+    osc.start(now);
+    osc.stop(now + length + 0.02);
+  } catch {
+    // Audio feedback is optional.
+  }
+}
+
+function haptic(enabled, pattern = 18) {
+  if (enabled && navigator.vibrate) navigator.vibrate(pattern);
+}
+
+function ProgressBar({ value, max, label }) {
+  const pct = Math.min(100, Math.round((value / max) * 100));
+  return (
+    <div className="progress-wrap" aria-label={label}>
+      <div className="progress-copy">
+        <span>{label}</span>
+        <strong>{value}/{max}</strong>
+      </div>
+      <div className="progress-track">
+        <div className="progress-fill" style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function PiecePreview({ piece, skinId, compact = false }) {
+  if (!piece || piece.placed) return <div className="empty-piece">Ready</div>;
+  const bounds = getPieceBounds(piece);
+  const cells = normalizeCells(piece.cells);
+  const skin = getSkin(skinId);
+  const filled = new Map(cells.map(([row, col], index) => [`${row}-${col}`, index]));
+  const grid = [];
+
+  for (let row = 0; row < bounds.height; row += 1) {
+    for (let col = 0; col < bounds.width; col += 1) {
+      const index = filled.get(`${row}-${col}`);
+      grid.push(
+        <span
+          key={`${row}-${col}`}
+          className={`piece-cell ${index !== undefined ? "filled" : ""}`}
+          style={
+            index !== undefined
+              ? { background: skin.swatches[(piece.colorIndex + index) % skin.swatches.length] }
+              : undefined
+          }
+        />,
+      );
+    }
+  }
+
+  return (
+    <div
+      className={`piece-grid ${compact ? "compact" : ""}`}
+      style={{
+        gridTemplateColumns: `repeat(${bounds.width}, var(--piece-cell))`,
+        gridTemplateRows: `repeat(${bounds.height}, var(--piece-cell))`,
+      }}
+      aria-label={piece.name}
+    >
+      {grid}
+    </div>
+  );
+}
+
+function StatPill({ icon: Icon, label, value }) {
+  return (
+    <div className="stat-pill">
+      <Icon size={16} aria-hidden="true" />
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function IconButton({ icon: Icon, label, onClick, disabled = false, tone = "plain" }) {
+  return (
+    <button className={`icon-button ${tone}`} type="button" onClick={onClick} disabled={disabled} title={label}>
+      <Icon size={18} aria-hidden="true" />
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function Board({ board, boardRef, skinId, hover, clearMarks, activePower, onCellAction }) {
+  const selectedSkin = getSkin(skinId);
+  const previewCells = new Set();
+  if (hover?.piece) {
+    hover.piece.cells.forEach(([pieceRow, pieceCol]) => {
+      previewCells.add(`${hover.row + pieceRow}-${hover.col + pieceCol}`);
+    });
+  }
+  const clearCells = new Set(clearMarks.map(([row, col]) => `${row}-${col}`));
+
+  return (
+    <div
+      ref={boardRef}
+      className={`board ${activePower ? "targeting" : ""}`}
+      style={{ "--board-bg": selectedSkin.board }}
+    >
+      {board.map((row, rowIndex) =>
+        row.map((cell, colIndex) => {
+          const key = `${rowIndex}-${colIndex}`;
+          const preview = previewCells.has(key);
+          const clearing = clearCells.has(key);
+          const cellSkin = cell ? getSkin(cell.skin) : selectedSkin;
+          const color = cell ? cellSkin.swatches[cell.colorIndex % cellSkin.swatches.length] : undefined;
+          return (
+            <button
+              type="button"
+              className={[
+                "board-cell",
+                cell ? "filled" : "",
+                preview ? "preview" : "",
+                preview && hover?.valid ? "valid" : "",
+                preview && !hover?.valid ? "invalid" : "",
+                clearing ? "clearing" : "",
+                activePower ? "tool-target" : "",
+              ].join(" ")}
+              key={key}
+              style={color ? { background: color } : undefined}
+              onPointerDown={(event) => {
+                if (!activePower) return;
+                event.preventDefault();
+                onCellAction(rowIndex, colIndex);
+              }}
+              aria-label={`Cell ${rowIndex + 1}, ${colIndex + 1}`}
+            />
+          );
+        }),
+      )}
+    </div>
+  );
+}
+
+function GameScreen({
+  run,
+  profile,
+  boardRef,
+  hover,
+  clearMarks,
+  particles,
+  lastReward,
+  drag,
+  activePower,
+  onBeginDrag,
+  onSelectPowerup,
+  onCellAction,
+  onPause,
+  onOpenShop,
+  onOpenMissions,
+  onOpenSettings,
+  onMenu,
+  onRestart,
+}) {
+  const skin = getSkin(profile.selectedSkin);
+  const xpMax = levelThreshold(profile.level);
+  return (
+    <main className="game-screen">
+      <header className="top-bar">
+        <div>
+          <span className="eyebrow">Block Rush</span>
+          <h1>{run.score.toLocaleString()}</h1>
+        </div>
+        <div className="top-actions">
+          <button className="round-button" type="button" onClick={onPause} title="Pause">
+            <Pause size={18} aria-hidden="true" />
+          </button>
+          <button className="round-button" type="button" onClick={onOpenSettings} title="Settings">
+            <Settings size={18} aria-hidden="true" />
+          </button>
+        </div>
+      </header>
+
+      <section className="stats-grid" aria-label="Game stats">
+        <StatPill icon={Trophy} label="Best" value={profile.highScore.toLocaleString()} />
+        <StatPill icon={Coins} label="Coins" value={profile.coins.toLocaleString()} />
+        <StatPill icon={Zap} label="Combo" value={run.combo ? `x${run.combo}` : "0"} />
+      </section>
+
+      <section className="level-strip">
+        <div>
+          <strong>Level {profile.level}</strong>
+          <span>{profile.xp}/{xpMax} XP</span>
+        </div>
+        <div className="mini-progress">
+          <span style={{ width: `${Math.min(100, (profile.xp / xpMax) * 100)}%` }} />
+        </div>
+      </section>
+
+      <div className="board-wrap">
+        <Board
+          board={run.board}
+          boardRef={boardRef}
+          skinId={profile.selectedSkin}
+          hover={hover}
+          clearMarks={clearMarks}
+          activePower={activePower}
+          onCellAction={onCellAction}
+        />
+        <div className="particles" aria-hidden="true">
+          {particles.map((particle) => (
+            <i
+              key={particle.id}
+              className="particle"
+              style={{
+                left: `${particle.left}%`,
+                top: `${particle.top}%`,
+                "--dx": `${particle.dx}px`,
+                "--dy": `${particle.dy}px`,
+                background: skin.swatches[particle.color],
+              }}
+            />
+          ))}
+        </div>
+        {lastReward && (
+          <div className="reward-burst" aria-live="polite">
+            <strong>+{lastReward.score}</strong>
+            <span>
+              {lastReward.lines > 0 ? `${lastReward.lines} line${lastReward.lines > 1 ? "s" : ""}` : "Nice move"}
+            </span>
+          </div>
+        )}
+      </div>
+
+      <ProgressBar value={profile.chestProgress} max={CHEST_MAX} label="Chest" />
+
+      <section className="power-row" aria-label="Power-ups">
+        <button
+          className={`power-button ${activePower === "hammer" ? "active" : ""}`}
+          type="button"
+          onClick={() => onSelectPowerup("hammer")}
+        >
+          <Hammer size={18} aria-hidden="true" />
+          <span>Hammer</span>
+          <strong>{profile.powerups.hammer || 0}</strong>
+        </button>
+        <button className="power-button" type="button" onClick={() => onSelectPowerup("shuffle")}>
+          <Shuffle size={18} aria-hidden="true" />
+          <span>Shuffle</span>
+          <strong>{profile.powerups.shuffle || 0}</strong>
+        </button>
+        <button
+          className={`power-button ${activePower === "bomb" ? "active" : ""}`}
+          type="button"
+          onClick={() => onSelectPowerup("bomb")}
+        >
+          <Bomb size={18} aria-hidden="true" />
+          <span>Bomb</span>
+          <strong>{profile.powerups.bomb || 0}</strong>
+        </button>
+      </section>
+
+      <section className="piece-tray" aria-label="Available pieces">
+        {run.pieces.map((piece) => (
+          <button
+            className={`piece-slot ${piece.placed ? "placed" : ""}`}
+            type="button"
+            key={piece.id}
+            onPointerDown={(event) => onBeginDrag(event, piece)}
+            disabled={piece.placed || run.isOver}
+            aria-label={piece.placed ? "Placed piece" : `Drag ${piece.name}`}
+          >
+            <PiecePreview piece={piece} skinId={profile.selectedSkin} />
+          </button>
+        ))}
+      </section>
+
+      <nav className="bottom-nav" aria-label="Game navigation">
+        <IconButton icon={Home} label="Menu" onClick={onMenu} />
+        <IconButton icon={Target} label="Missions" onClick={onOpenMissions} />
+        <IconButton icon={ShoppingBag} label="Shop" onClick={onOpenShop} />
+        <IconButton icon={RotateCcw} label="Restart" onClick={onRestart} />
+      </nav>
+
+      {drag && (
+        <div className="drag-ghost" style={{ transform: `translate(${drag.x}px, ${drag.y}px)` }} aria-hidden="true">
+          <PiecePreview piece={drag.piece} skinId={profile.selectedSkin} compact />
+        </div>
+      )}
+    </main>
+  );
+}
+
+function MainMenu({ run, profile, onPlay, onNewGame, onShop, onMissions, onSettings }) {
+  const hasSavedRun = run.moves > 0 && !run.isOver;
+  return (
+    <main className="menu-screen">
+      <section className="brand-panel">
+        <span className="eyebrow">8x8 puzzle</span>
+        <h1>Block Rush</h1>
+        <p>Place pieces, clear lines, chain combos, and unlock bright block styles.</p>
+      </section>
+
+      <section className="menu-stats">
+        <StatPill icon={Trophy} label="Best" value={profile.highScore.toLocaleString()} />
+        <StatPill icon={Coins} label="Coins" value={profile.coins.toLocaleString()} />
+        <StatPill icon={Star} label="Level" value={profile.level} />
+      </section>
+
+      <section className="primary-actions">
+        <button className="primary-button" type="button" onClick={hasSavedRun ? onPlay : onNewGame}>
+          <Play size={20} aria-hidden="true" />
+          <span>{hasSavedRun ? "Continue" : "Play"}</span>
+        </button>
+        <button className="secondary-button" type="button" onClick={onNewGame}>
+          <RotateCcw size={18} aria-hidden="true" />
+          <span>New Game</span>
+        </button>
+      </section>
+
+      <nav className="menu-grid" aria-label="Main menu">
+        <IconButton icon={ShoppingBag} label="Shop" onClick={onShop} />
+        <IconButton icon={Target} label="Missions" onClick={onMissions} />
+        <IconButton icon={Gift} label="Chest" onClick={onMissions} />
+        <IconButton icon={Settings} label="Settings" onClick={onSettings} />
+      </nav>
+    </main>
+  );
+}
+
+function ShopScreen({ profile, onBack, onBuySkin, onSelectSkin, onBuyPowerup }) {
+  return (
+    <main className="panel-screen">
+      <ScreenHeader title="Shop" onBack={onBack} meta={`${profile.coins.toLocaleString()} coins`} />
+      <section className="shop-section">
+        <h2>Block themes</h2>
+        <div className="skin-list">
+          {SKINS.map((skin) => {
+            const owned = profile.ownedSkins.includes(skin.id);
+            const selected = profile.selectedSkin === skin.id;
+            return (
+              <article className={`skin-card ${selected ? "selected" : ""}`} key={skin.id}>
+                <div className="skin-preview" style={{ background: skin.board }}>
+                  {skin.swatches.map((color) => (
+                    <span key={color} style={{ background: color }} />
+                  ))}
+                </div>
+                <div>
+                  <h3>{skin.name}</h3>
+                  <p>{owned ? "Owned" : `${skin.price} coins`}</p>
+                </div>
+                {selected ? (
+                  <button className="mini-button done" type="button" disabled>
+                    <Check size={16} aria-hidden="true" />
+                    <span>Active</span>
+                  </button>
+                ) : owned ? (
+                  <button className="mini-button" type="button" onClick={() => onSelectSkin(skin.id)}>
+                    <Check size={16} aria-hidden="true" />
+                    <span>Select</span>
+                  </button>
+                ) : (
+                  <button
+                    className="mini-button"
+                    type="button"
+                    onClick={() => onBuySkin(skin.id)}
+                    disabled={profile.coins < skin.price}
+                  >
+                    <Lock size={16} aria-hidden="true" />
+                    <span>Buy</span>
+                  </button>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="shop-section">
+        <h2>Power-ups</h2>
+        <div className="power-shop">
+          {Object.values(POWERUPS).map((powerup) => (
+            <article className="power-card" key={powerup.id}>
+              <div className="power-icon">
+                {powerup.id === "hammer" && <Hammer size={22} aria-hidden="true" />}
+                {powerup.id === "shuffle" && <Shuffle size={22} aria-hidden="true" />}
+                {powerup.id === "bomb" && <Bomb size={22} aria-hidden="true" />}
+              </div>
+              <div>
+                <h3>{powerup.name}</h3>
+                <p>{profile.powerups[powerup.id] || 0} owned</p>
+              </div>
+              <button
+                className="mini-button"
+                type="button"
+                onClick={() => onBuyPowerup(powerup.id)}
+                disabled={profile.coins < powerup.cost}
+              >
+                <Coins size={16} aria-hidden="true" />
+                <span>{powerup.cost}</span>
+              </button>
+            </article>
+          ))}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function MissionsScreen({ profile, onBack, onClaim, onOpenChest }) {
+  return (
+    <main className="panel-screen">
+      <ScreenHeader title="Missions" onBack={onBack} meta="Daily" />
+      <section className="mission-list">
+        {MISSION_DEFS.map((mission) => {
+          const state = profile.daily.missions[mission.id] || { progress: 0, claimed: false };
+          const ready = state.progress >= mission.target;
+          return (
+            <article className="mission-card" key={mission.id}>
+              <div className="mission-icon">
+                <Target size={20} aria-hidden="true" />
+              </div>
+              <div className="mission-body">
+                <h2>{mission.title}</h2>
+                <ProgressBar value={Math.min(state.progress, mission.target)} max={mission.target} label="Progress" />
+              </div>
+              <button
+                className="mini-button"
+                type="button"
+                disabled={!ready || state.claimed}
+                onClick={() => onClaim(mission.id)}
+              >
+                <Coins size={16} aria-hidden="true" />
+                <span>{state.claimed ? "Done" : mission.reward}</span>
+              </button>
+            </article>
+          );
+        })}
+      </section>
+
+      <section className="chest-panel">
+        <Gift size={28} aria-hidden="true" />
+        <div>
+          <h2>Reward Chest</h2>
+          <ProgressBar value={profile.chestProgress} max={CHEST_MAX} label="Chest" />
+        </div>
+        <button className="primary-button small" type="button" disabled={profile.chestProgress < CHEST_MAX} onClick={onOpenChest}>
+          <Gift size={18} aria-hidden="true" />
+          <span>Open</span>
+        </button>
+      </section>
+    </main>
+  );
+}
+
+function SettingsScreen({ profile, onBack, onToggleSetting, onResetProgress, confirmReset, onConfirmReset }) {
+  return (
+    <main className="panel-screen">
+      <ScreenHeader title="Settings" onBack={onBack} meta="Local save" />
+      <section className="settings-list">
+        <button className="setting-row" type="button" onClick={() => onToggleSetting("sound")}>
+          {profile.settings.sound ? <Volume2 size={20} aria-hidden="true" /> : <VolumeX size={20} aria-hidden="true" />}
+          <span>Sound</span>
+          <strong>{profile.settings.sound ? "On" : "Off"}</strong>
+        </button>
+        <button className="setting-row" type="button" onClick={() => onToggleSetting("haptics")}>
+          <Smartphone size={20} aria-hidden="true" />
+          <span>Haptics</span>
+          <strong>{profile.settings.haptics ? "On" : "Off"}</strong>
+        </button>
+        <button className={`setting-row danger ${confirmReset ? "confirm" : ""}`} type="button" onClick={confirmReset ? onConfirmReset : onResetProgress}>
+          <RotateCcw size={20} aria-hidden="true" />
+          <span>{confirmReset ? "Confirm reset" : "Reset progress"}</span>
+          <strong>{confirmReset ? "Tap" : ""}</strong>
+        </button>
+      </section>
+    </main>
+  );
+}
+
+function ScreenHeader({ title, meta, onBack }) {
+  return (
+    <header className="screen-header">
+      <button className="round-button" type="button" onClick={onBack} title="Back">
+        <ArrowLeft size={18} aria-hidden="true" />
+      </button>
+      <div>
+        <h1>{title}</h1>
+        {meta && <span>{meta}</span>}
+      </div>
+    </header>
+  );
+}
+
+function GameOverScreen({ run, profile, onRestart, onMenu, onShop }) {
+  return (
+    <main className="panel-screen game-over">
+      <section className="game-over-hero">
+        <div className="trophy-ring">
+          <Trophy size={38} aria-hidden="true" />
+        </div>
+        <span className="eyebrow">Game Over</span>
+        <h1>{run.score.toLocaleString()}</h1>
+        <p>{run.totalLines} lines cleared</p>
+      </section>
+      <section className="menu-stats">
+        <StatPill icon={Trophy} label="Best" value={profile.highScore.toLocaleString()} />
+        <StatPill icon={Coins} label="Coins" value={profile.coins.toLocaleString()} />
+        <StatPill icon={Star} label="Level" value={profile.level} />
+      </section>
+      <section className="primary-actions">
+        <button className="primary-button" type="button" onClick={onRestart}>
+          <RotateCcw size={20} aria-hidden="true" />
+          <span>Restart</span>
+        </button>
+        <button className="secondary-button" type="button" onClick={onShop}>
+          <ShoppingBag size={18} aria-hidden="true" />
+          <span>Shop</span>
+        </button>
+        <button className="secondary-button" type="button" onClick={onMenu}>
+          <Home size={18} aria-hidden="true" />
+          <span>Menu</span>
+        </button>
+      </section>
+    </main>
+  );
+}
+
+function PauseModal({ onResume, onRestart, onMenu, onSettings }) {
+  return (
+    <div className="modal-layer" role="dialog" aria-modal="true">
+      <section className="modal-card pause-card">
+        <h2>Paused</h2>
+        <button className="primary-button" type="button" onClick={onResume}>
+          <Play size={20} aria-hidden="true" />
+          <span>Resume</span>
+        </button>
+        <button className="secondary-button" type="button" onClick={onRestart}>
+          <RotateCcw size={18} aria-hidden="true" />
+          <span>Restart</span>
+        </button>
+        <button className="secondary-button" type="button" onClick={onSettings}>
+          <Settings size={18} aria-hidden="true" />
+          <span>Settings</span>
+        </button>
+        <button className="secondary-button" type="button" onClick={onMenu}>
+          <Home size={18} aria-hidden="true" />
+          <span>Menu</span>
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function ChestModal({ state, onOpen, onClose }) {
+  return (
+    <div className="modal-layer" role="dialog" aria-modal="true">
+      <section className={`modal-card chest-modal ${state.reward ? "opened" : ""}`}>
+        <button className="round-button close" type="button" onClick={onClose} title="Close">
+          <X size={18} aria-hidden="true" />
+        </button>
+        <div className="chest-visual" aria-hidden="true">
+          <span className="chest-rays" />
+          <Gift size={54} />
+        </div>
+        <h2>{state.reward ? "Chest Opened" : "Chest Ready"}</h2>
+        {state.reward ? (
+          <p className="reward-line">{state.reward.label}</p>
+        ) : (
+          <button className="primary-button" type="button" onClick={onOpen}>
+            <Gift size={18} aria-hidden="true" />
+            <span>Open Chest</span>
+          </button>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function Toast({ toast }) {
+  if (!toast) return null;
+  return <div className="toast">{toast}</div>;
+}
+
+function ComboFlash({ label }) {
+  if (!label) return null;
+  return <div className="combo-flash">{label}</div>;
+}
+
+function LevelFlash({ level }) {
+  if (!level) return null;
+  return <div className="level-flash">Level {level}</div>;
+}
+
+function App() {
+  const [profile, setProfile] = useState(() => normalizeProfile(readJson(STORAGE_KEYS.profile)));
+  const [run, setRun] = useState(() => reviveRunFromStorage(readJson(STORAGE_KEYS.run)) || createRun());
+  const [screen, setScreen] = useState("menu");
+  const [returnScreen, setReturnScreen] = useState("menu");
+  const [drag, setDrag] = useState(null);
+  const [hover, setHover] = useState(null);
+  const [activePower, setActivePower] = useState(null);
+  const [clearMarks, setClearMarks] = useState([]);
+  const [particles, setParticles] = useState([]);
+  const [toast, setToast] = useState("");
+  const [comboFlash, setComboFlash] = useState("");
+  const [levelFlash, setLevelFlash] = useState(0);
+  const [lastReward, setLastReward] = useState(null);
+  const [chestState, setChestState] = useState(null);
+  const [paused, setPaused] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [shake, setShake] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const boardRef = useRef(null);
+  const toastTimer = useRef(null);
+  const rewardTimer = useRef(null);
+
+  const selectedSkin = useMemo(() => getSkin(profile.selectedSkin), [profile.selectedSkin]);
+
+  useEffect(() => {
+    saveJson(STORAGE_KEYS.profile, profile);
+  }, [profile]);
+
+  useEffect(() => {
+    saveJson(STORAGE_KEYS.run, run);
+  }, [run]);
+
+  function notify(message) {
+    setToast(message);
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(""), 1700);
+  }
+
+  function showReward(reward) {
+    setLastReward(reward);
+    window.clearTimeout(rewardTimer.current);
+    rewardTimer.current = window.setTimeout(() => setLastReward(null), 900);
+  }
+
+  function addParticles(amount) {
+    const nextParticles = Array.from({ length: amount }, (_, index) => ({
+      id: `${Date.now()}-${index}`,
+      left: 30 + Math.random() * 40,
+      top: 28 + Math.random() * 36,
+      dx: -90 + Math.random() * 180,
+      dy: -120 + Math.random() * 110,
+      color: index % selectedSkin.swatches.length,
+    }));
+    setParticles(nextParticles);
+    window.setTimeout(() => setParticles([]), 760);
+  }
+
+  function flashCombo(combo) {
+    const label = comboLabel(combo);
+    if (!label) return;
+    setComboFlash(label);
+    window.setTimeout(() => setComboFlash(""), 850);
+  }
+
+  function triggerShake(strong = false) {
+    setShake(true);
+    haptic(profile.settings.haptics, strong ? [28, 30, 28] : 24);
+    window.setTimeout(() => setShake(false), strong ? 380 : 260);
+  }
+
+  function finalizeRunAfterMove(baseRun, boardAfterClear, piecesAfterPlacement) {
+    const nextPieces = piecesAfterPlacement.every((piece) => piece.placed) ? generateHand() : piecesAfterPlacement;
+    const isOver = !canAnyPieceFit(boardAfterClear, nextPieces);
+    const finalRun = { ...baseRun, board: boardAfterClear, pieces: nextPieces, isOver };
+    setRun(finalRun);
+    if (isOver) {
+      playSound("bad", profile.settings.sound);
+      setScreen("gameover");
+    }
+    return finalRun;
+  }
+
+  function handlePlacePiece(pieceId, row, col) {
+    if (run.isOver || clearing || paused) return false;
+    const piece = run.pieces.find((item) => item.id === pieceId);
+    if (!piece || !canPlacePiece(run.board, piece, row, col)) {
+      notify("No room there");
+      playSound("bad", profile.settings.sound);
+      haptic(profile.settings.haptics, 12);
+      return false;
+    }
+
+    const placedBoard = placePiece(run.board, piece, row, col, profile.selectedSkin);
+    const completed = findCompletedLines(placedBoard);
+    const reward = getPlacementReward(piece.cells.length, completed.count, run.combo);
+    const score = run.score + reward.score;
+    const totalLines = run.totalLines + completed.count;
+    const piecesAfterPlacement = run.pieces.map((item) => (item.id === pieceId ? { ...item, placed: true } : item));
+    const baseRun = {
+      ...run,
+      board: placedBoard,
+      pieces: piecesAfterPlacement,
+      score,
+      combo: reward.nextCombo,
+      totalLines,
+      moves: run.moves + 1,
+    };
+
+    const progress = applyGameProgress(profile, {
+      score,
+      coins: reward.coins,
+      xp: reward.xp,
+      previousLines: run.totalLines,
+      linesCleared: completed.count,
+      comboEvent: reward.nextCombo >= 2 ? 1 : 0,
+    });
+
+    setProfile(progress.profile);
+    if (progress.xpRewards.levelsGained > 0) {
+      setLevelFlash(progress.profile.level);
+      window.setTimeout(() => setLevelFlash(0), 1100);
+    }
+    if (progress.lineRewards.chestReady && progress.profile.chestProgress >= CHEST_MAX) {
+      window.setTimeout(() => setChestState({ reward: null }), 360);
+    }
+
+    playSound(completed.count ? (reward.nextCombo >= 2 ? "combo" : "clear") : "place", profile.settings.sound);
+    showReward({ score: reward.score, coins: reward.coins, lines: completed.count });
+    if (completed.count > 0) {
+      setRun(baseRun);
+      setClearing(true);
+      const cleared = clearCompletedLines(placedBoard, completed);
+      setClearMarks(cleared.clearedCells);
+      addParticles(20 + completed.count * 14 + reward.nextCombo * 5);
+      flashCombo(reward.nextCombo);
+      triggerShake(completed.count > 1 || reward.nextCombo >= 2);
+      window.setTimeout(() => {
+        setClearMarks([]);
+        finalizeRunAfterMove(baseRun, cleared.board, piecesAfterPlacement);
+        setClearing(false);
+      }, 190);
+    } else {
+      finalizeRunAfterMove(baseRun, placedBoard, piecesAfterPlacement);
+    }
+    return true;
+  }
+
+  function handleBeginDrag(event, piece) {
+    if (piece.placed || run.isOver || clearing || paused) return;
+    event.preventDefault();
+    setActivePower(null);
+    const nextDrag = { piece, pieceId: piece.id, x: event.clientX, y: event.clientY };
+    setDrag(nextDrag);
+    const cell = getPointCell(boardRef.current, piece, { x: event.clientX, y: event.clientY });
+    if (cell) {
+      setHover({ ...cell, piece, valid: canPlacePiece(run.board, piece, cell.row, cell.col) });
+    }
+  }
+
+  useEffect(() => {
+    if (!drag) return undefined;
+
+    function onMove(event) {
+      event.preventDefault();
+      const cell = getPointCell(boardRef.current, drag.piece, { x: event.clientX, y: event.clientY });
+      setDrag((current) => (current ? { ...current, x: event.clientX, y: event.clientY } : current));
+      if (cell) {
+        setHover({ ...cell, piece: drag.piece, valid: canPlacePiece(run.board, drag.piece, cell.row, cell.col) });
+      } else {
+        setHover(null);
+      }
+    }
+
+    function onUp() {
+      if (hover) handlePlacePiece(drag.pieceId, hover.row, hover.col);
+      else notify("Drop on the board");
+      setDrag(null);
+      setHover(null);
+    }
+
+    window.addEventListener("pointermove", onMove, { passive: false });
+    window.addEventListener("pointerup", onUp, { once: true });
+    window.addEventListener("pointercancel", onUp, { once: true });
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [drag, hover, run.board]);
+
+  function startNewGame() {
+    const nextRun = createRun();
+    setRun(nextRun);
+    setPaused(false);
+    setActivePower(null);
+    setScreen("game");
+  }
+
+  function openSettingsScreen(from) {
+    setReturnScreen(from);
+    setConfirmReset(false);
+    setScreen("settings");
+  }
+
+  function backFromPanel() {
+    setScreen(returnScreen);
+  }
+
+  function handlePowerup(powerupId) {
+    if (run.isOver || clearing) return;
+    if ((profile.powerups[powerupId] || 0) <= 0) {
+      notify("Get more in shop");
+      setScreen("shop");
+      setReturnScreen("game");
+      return;
+    }
+
+    if (powerupId === "shuffle") {
+      const spent = spendPowerup(profile, "shuffle");
+      const fresh = generateHand();
+      let nextIndex = 0;
+      const pieces = run.pieces.map((piece) => {
+        if (piece.placed) return piece;
+        const nextPiece = fresh[nextIndex] || fresh[0];
+        nextIndex += 1;
+        return nextPiece;
+      });
+      const nextRun = { ...run, pieces, isOver: !canAnyPieceFit(run.board, pieces) };
+      setProfile(spent.profile);
+      setRun(nextRun);
+      playSound("reward", profile.settings.sound);
+      notify("Pieces shuffled");
+      if (nextRun.isOver) setScreen("gameover");
+      return;
+    }
+
+    setActivePower((current) => (current === powerupId ? null : powerupId));
+    notify(powerupId === "hammer" ? "Tap one block" : "Tap a 3x3 target");
+  }
+
+  function handleCellAction(row, col) {
+    if (!activePower || clearing) return;
+    const result = activePower === "hammer" ? removeCell(run.board, row, col) : clearArea(run.board, row, col);
+    if (result.removed <= 0) {
+      notify("Pick filled blocks");
+      playSound("bad", profile.settings.sound);
+      haptic(profile.settings.haptics, 10);
+      return;
+    }
+    const spent = spendPowerup(profile, activePower);
+    if (!spent.spent) {
+      notify("No power-up left");
+      return;
+    }
+
+    const scoreGain = activePower === "hammer" ? 15 : result.removed * 12;
+    const score = run.score + scoreGain;
+    const progress = applyGameProgress(spent.profile, {
+      score,
+      coins: Math.floor(scoreGain / 80),
+      xp: Math.max(3, result.removed * 4),
+      previousLines: run.totalLines,
+      linesCleared: 0,
+      comboEvent: 0,
+    });
+    const isOver = !canAnyPieceFit(result.board, run.pieces);
+    setProfile(progress.profile);
+    setRun({ ...run, board: result.board, score, isOver });
+    setActivePower(null);
+    showReward({ score: scoreGain, coins: Math.floor(scoreGain / 80), lines: 0 });
+    addParticles(activePower === "hammer" ? 10 : 24);
+    triggerShake(activePower === "bomb");
+    playSound("clear", profile.settings.sound);
+    if (isOver) setScreen("gameover");
+  }
+
+  function handleClaimMission(missionId) {
+    const result = claimMission(profile, missionId);
+    if (!result.claimed) {
+      notify("Mission not ready");
+      return;
+    }
+    setProfile(result.profile);
+    playSound("reward", profile.settings.sound);
+    notify(`+${result.reward} coins`);
+  }
+
+  function handleBuySkin(skinId) {
+    const result = buySkin(profile, skinId);
+    if (!result.purchased) {
+      notify("Not enough coins");
+      return;
+    }
+    setProfile(result.profile);
+    playSound("reward", profile.settings.sound);
+    notify("Theme unlocked");
+  }
+
+  function handleSelectSkin(skinId) {
+    const result = selectSkin(profile, skinId);
+    if (result.selected) {
+      setProfile(result.profile);
+      notify("Theme selected");
+    }
+  }
+
+  function handleBuyPowerup(powerupId) {
+    const result = buyPowerup(profile, powerupId);
+    if (!result.purchased) {
+      notify("Not enough coins");
+      return;
+    }
+    setProfile(result.profile);
+    playSound("reward", profile.settings.sound);
+    notify(`${POWERUPS[powerupId].name} added`);
+  }
+
+  function handleOpenChest() {
+    setChestState({ reward: null });
+  }
+
+  function handleChestReward() {
+    const result = openChest(profile);
+    if (!result.opened) return;
+    setProfile(result.profile);
+    setChestState({ reward: result.reward });
+    playSound("reward", profile.settings.sound);
+    triggerShake(false);
+  }
+
+  function toggleSetting(setting) {
+    setProfile({
+      ...profile,
+      settings: {
+        ...profile.settings,
+        [setting]: !profile.settings[setting],
+      },
+    });
+  }
+
+  function confirmResetProgress() {
+    const nextProfile = createInitialProfile();
+    const nextRun = createRun();
+    setProfile(nextProfile);
+    setRun(nextRun);
+    setScreen("menu");
+    setConfirmReset(false);
+    window.localStorage.removeItem(STORAGE_KEYS.profile);
+    window.localStorage.removeItem(STORAGE_KEYS.run);
+    notify("Progress reset");
+  }
+
+  const shellStyle = {
+    "--skin-0": selectedSkin.swatches[0],
+    "--skin-1": selectedSkin.swatches[1],
+    "--skin-2": selectedSkin.swatches[2],
+    "--skin-3": selectedSkin.swatches[3],
+  };
+
+  return (
+    <div className={`app-shell ${shake ? "shake" : ""}`} style={shellStyle}>
+      <div className="phone-frame">
+        {screen === "menu" && (
+          <MainMenu
+            run={run}
+            profile={profile}
+            onPlay={() => setScreen("game")}
+            onNewGame={startNewGame}
+            onShop={() => {
+              setReturnScreen("menu");
+              setScreen("shop");
+            }}
+            onMissions={() => {
+              setReturnScreen("menu");
+              setScreen("missions");
+            }}
+            onSettings={() => openSettingsScreen("menu")}
+          />
+        )}
+        {screen === "game" && (
+          <GameScreen
+            run={run}
+            profile={profile}
+            boardRef={boardRef}
+            hover={hover}
+            clearMarks={clearMarks}
+            particles={particles}
+            lastReward={lastReward}
+            drag={drag}
+            activePower={activePower}
+            onBeginDrag={handleBeginDrag}
+            onSelectPowerup={handlePowerup}
+            onCellAction={handleCellAction}
+            onPause={() => setPaused(true)}
+            onOpenShop={() => {
+              setReturnScreen("game");
+              setScreen("shop");
+            }}
+            onOpenMissions={() => {
+              setReturnScreen("game");
+              setScreen("missions");
+            }}
+            onOpenSettings={() => openSettingsScreen("game")}
+            onMenu={() => setScreen("menu")}
+            onRestart={startNewGame}
+          />
+        )}
+        {screen === "shop" && (
+          <ShopScreen
+            profile={profile}
+            onBack={backFromPanel}
+            onBuySkin={handleBuySkin}
+            onSelectSkin={handleSelectSkin}
+            onBuyPowerup={handleBuyPowerup}
+          />
+        )}
+        {screen === "missions" && (
+          <MissionsScreen
+            profile={profile}
+            onBack={backFromPanel}
+            onClaim={handleClaimMission}
+            onOpenChest={handleOpenChest}
+          />
+        )}
+        {screen === "settings" && (
+          <SettingsScreen
+            profile={profile}
+            onBack={backFromPanel}
+            onToggleSetting={toggleSetting}
+            onResetProgress={() => setConfirmReset(true)}
+            confirmReset={confirmReset}
+            onConfirmReset={confirmResetProgress}
+          />
+        )}
+        {screen === "gameover" && (
+          <GameOverScreen
+            run={run}
+            profile={profile}
+            onRestart={startNewGame}
+            onMenu={() => setScreen("menu")}
+            onShop={() => {
+              setReturnScreen("gameover");
+              setScreen("shop");
+            }}
+          />
+        )}
+      </div>
+
+      {paused && (
+        <PauseModal
+          onResume={() => setPaused(false)}
+          onRestart={() => {
+            setPaused(false);
+            startNewGame();
+          }}
+          onMenu={() => {
+            setPaused(false);
+            setScreen("menu");
+          }}
+          onSettings={() => {
+            setPaused(false);
+            openSettingsScreen("game");
+          }}
+        />
+      )}
+      {chestState && <ChestModal state={chestState} onOpen={handleChestReward} onClose={() => setChestState(null)} />}
+      <Toast toast={toast} />
+      <ComboFlash label={comboFlash} />
+      <LevelFlash level={levelFlash} />
+    </div>
+  );
+}
+
+export default App;
