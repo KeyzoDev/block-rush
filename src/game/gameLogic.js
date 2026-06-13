@@ -1,6 +1,15 @@
 export const BOARD_SIZE = 8;
 export const CHEST_MAX = 8;
 
+export const BONUS_STAGE = {
+  scoreMultiplier: 3,
+  triggerCombo: 3,
+  lineMilestone: 12,
+  maxMoves: 5,
+  maxMisses: 2,
+  colorIndex: 1,
+};
+
 export const STORAGE_KEYS = {
   profile: "block-rush-profile-v1",
   run: "block-rush-run-v1",
@@ -143,6 +152,8 @@ export function generatePiece(rng = Math.random, id = String(Date.now())) {
     name: shape.name,
     cells: shape.cells.map((cell) => [...cell]),
     colorIndex: Math.floor(rng() * 4),
+    solid: false,
+    bonus: false,
     placed: false,
   };
 }
@@ -151,13 +162,55 @@ export function generateHand(rng = Math.random, seed = Date.now()) {
   return [0, 1, 2].map((slot) => generatePiece(rng, `p-${seed}-${slot}-${Math.floor(rng() * 100000)}`));
 }
 
+export function createBonusState(active = false) {
+  return active
+    ? { active: true, movesLeft: BONUS_STAGE.maxMoves, misses: 0 }
+    : { active: false, movesLeft: 0, misses: 0 };
+}
+
+export function bonusizePieces(pieces, colorIndex = BONUS_STAGE.colorIndex) {
+  return pieces.map((piece) =>
+    piece?.placed
+      ? piece
+      : {
+          ...piece,
+          colorIndex,
+          solid: true,
+          bonus: true,
+        },
+  );
+}
+
+export function getPieceColorIndex(piece, cellIndex) {
+  return piece?.solid ? piece.colorIndex : (piece.colorIndex + cellIndex) % 4;
+}
+
+export function shouldStartBonusStage({ previousLines, nextLines, nextCombo, lineCount, bonusActive }) {
+  if (bonusActive || lineCount <= 0) return false;
+  const crossedMilestone =
+    Math.floor(previousLines / BONUS_STAGE.lineMilestone) < Math.floor(nextLines / BONUS_STAGE.lineMilestone);
+  return nextCombo >= BONUS_STAGE.triggerCombo || crossedMilestone;
+}
+
+export function advanceBonusStage(bonus, lineCount) {
+  if (!bonus?.active) return createBonusState(false);
+  const movesLeft = Math.max(0, (bonus.movesLeft || BONUS_STAGE.maxMoves) - 1);
+  const misses = lineCount > 0 ? 0 : (bonus.misses || 0) + 1;
+  if (movesLeft <= 0 || misses >= BONUS_STAGE.maxMisses) return createBonusState(false);
+  return { active: true, movesLeft, misses };
+}
+
 export function createRun(rng = Math.random) {
   return {
     board: createEmptyBoard(),
     pieces: generateHand(rng),
     score: 0,
     combo: 0,
+    comboMisses: 0,
+    bonus: createBonusState(false),
     totalLines: 0,
+    coinsEarned: 0,
+    xpEarned: 0,
     moves: 0,
     isOver: false,
     startedAt: Date.now(),
@@ -184,7 +237,7 @@ export function placePiece(board, piece, row, col, skinId = "classic") {
   piece.cells.forEach(([cellRow, cellCol], index) => {
     nextBoard[row + cellRow][col + cellCol] = {
       skin: skinId,
-      colorIndex: (piece.colorIndex + index) % 4,
+      colorIndex: getPieceColorIndex(piece, index),
     };
   });
   return nextBoard;
@@ -242,12 +295,13 @@ export function canAnyPieceFit(board, pieces) {
   });
 }
 
-export function getPlacementReward(cellCount, lineCount, currentCombo) {
-  const nextCombo = lineCount > 0 ? currentCombo + 1 : 0;
+export function getPlacementReward(cellCount, lineCount, currentCombo, options = {}) {
+  const nextCombo = lineCount > 0 ? currentCombo + 1 : currentCombo;
   const comboMultiplier = Math.max(1, nextCombo);
-  const lineScore = lineCount * 120 * comboMultiplier;
-  const multiLineBonus = Math.max(0, lineCount - 1) * 90;
-  const score = cellCount * 10 + lineScore + multiLineBonus;
+  const lineTable = [0, 100, 260, 460, 760, 1100, 1500, 1950, 2450];
+  const lineScore = (lineTable[lineCount] || lineCount * 320) * comboMultiplier;
+  const bonusMultiplier = options.bonusActive ? BONUS_STAGE.scoreMultiplier : 1;
+  const score = Math.round((cellCount * 10 + lineScore) * bonusMultiplier);
   const coins = Math.max(0, Math.floor(score / 90) + lineCount * 2 + (nextCombo >= 2 ? nextCombo * 3 : 0));
   const xp = Math.max(4, Math.floor(score / 7));
 
@@ -257,6 +311,7 @@ export function getPlacementReward(cellCount, lineCount, currentCombo) {
     xp,
     nextCombo,
     comboMultiplier,
+    bonusMultiplier,
     lineCount,
   };
 }
@@ -562,7 +617,17 @@ export function reviveRunFromStorage(rawRun) {
     pieces: rawRun.pieces,
     score: Number(rawRun.score) || 0,
     combo: Number(rawRun.combo) || 0,
+    comboMisses: Math.max(0, Number(rawRun.comboMisses) || 0),
+    bonus: rawRun.bonus?.active
+      ? {
+          active: true,
+          movesLeft: Math.max(1, Math.min(BONUS_STAGE.maxMoves, Number(rawRun.bonus.movesLeft) || BONUS_STAGE.maxMoves)),
+          misses: Math.max(0, Math.min(BONUS_STAGE.maxMisses - 1, Number(rawRun.bonus.misses) || 0)),
+        }
+      : createBonusState(false),
     totalLines: Number(rawRun.totalLines) || 0,
+    coinsEarned: Number(rawRun.coinsEarned) || 0,
+    xpEarned: Number(rawRun.xpEarned) || 0,
     moves: Number(rawRun.moves) || 0,
     isOver: Boolean(rawRun.isOver),
     startedAt: Number(rawRun.startedAt) || Date.now(),

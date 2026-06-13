@@ -27,12 +27,15 @@ import {
 } from "lucide-react";
 import {
   BOARD_SIZE,
+  BONUS_STAGE,
   CHEST_MAX,
   MISSION_DEFS,
   POWERUPS,
   SKINS,
   STORAGE_KEYS,
+  advanceBonusStage,
   applyGameProgress,
+  bonusizePieces,
   buyPowerup,
   buySkin,
   canAnyPieceFit,
@@ -46,6 +49,7 @@ import {
   findCompletedLines,
   generateHand,
   getPieceBounds,
+  getPieceColorIndex,
   getPlacementReward,
   getSkin,
   levelThreshold,
@@ -56,6 +60,7 @@ import {
   removeCell,
   reviveRunFromStorage,
   selectSkin,
+  shouldStartBonusStage,
   spendPowerup,
 } from "./game/gameLogic.js";
 
@@ -211,6 +216,19 @@ function praiseLabel(lineCount, combo) {
   return "";
 }
 
+function syncPiecesWithBonus(pieces, bonus) {
+  if (bonus?.active) return bonusizePieces(pieces);
+  return pieces.map((piece) =>
+    piece?.bonus && !piece.placed
+      ? {
+          ...piece,
+          solid: false,
+          bonus: false,
+        }
+      : piece,
+  );
+}
+
 function ProgressBar({ value, max, label }) {
   const pct = Math.min(100, Math.round((value / max) * 100));
   return (
@@ -243,7 +261,7 @@ function PiecePreview({ piece, skinId, compact = false }) {
           className={`piece-cell ${index !== undefined ? "filled" : ""}`}
           style={
             index !== undefined
-              ? { background: skin.swatches[(piece.colorIndex + index) % skin.swatches.length] }
+              ? { background: skin.swatches[getPieceColorIndex(piece, index) % skin.swatches.length] }
               : undefined
           }
         />,
@@ -361,19 +379,18 @@ function GameScreen({
   onSelectPowerup,
   onCellAction,
   onPause,
-  onOpenShop,
-  onOpenMissions,
   onOpenSettings,
-  onMenu,
-  onRestart,
 }) {
   const skin = getSkin(profile.selectedSkin);
-  const xpMax = levelThreshold(profile.level);
   return (
     <main className="game-screen">
       <header className="top-bar">
-        <div>
-          <span className="eyebrow">Block Rush</span>
+        <div className="best-chip">
+          <Trophy size={14} aria-hidden="true" />
+          <span>{profile.highScore.toLocaleString()}</span>
+        </div>
+        <div className="score-block">
+          <span>Score</span>
           <h1>{run.score.toLocaleString()}</h1>
         </div>
         <div className="top-actions">
@@ -386,30 +403,20 @@ function GameScreen({
         </div>
       </header>
 
-      <section className="stats-grid" aria-label="Game stats">
-        <StatPill icon={Trophy} label="Best" value={profile.highScore.toLocaleString()} />
-        <StatPill icon={Coins} label="Coins" value={profile.coins.toLocaleString()} />
-        <StatPill icon={Zap} label="Combo" value={run.combo ? `x${run.combo}` : "0"} />
-      </section>
-
-      {run.combo > 0 && (
-        <div className="combo-meter" aria-live="polite">
-          <span>Combo streak</span>
-          <strong>x{run.combo}</strong>
-        </div>
-      )}
-
-      <section className="level-strip">
-        <div>
-          <strong>Level {profile.level}</strong>
-          <span>{profile.xp}/{xpMax} XP</span>
-        </div>
-        <div className="mini-progress">
-          <span style={{ width: `${Math.min(100, (profile.xp / xpMax) * 100)}%` }} />
-        </div>
-      </section>
-
       <div className="board-wrap">
+        {run.combo > 0 && (
+          <div className="combo-meter" aria-live="polite">
+            <span>Combo</span>
+            <strong>x{run.combo}</strong>
+          </div>
+        )}
+        {run.bonus?.active && (
+          <div className="rush-meter" aria-live="polite">
+            <Zap size={15} aria-hidden="true" />
+            <span>Rush x{BONUS_STAGE.scoreMultiplier}</span>
+            <strong>{run.bonus.movesLeft}</strong>
+          </div>
+        )}
         <Board
           board={run.board}
           boardRef={boardRef}
@@ -444,9 +451,22 @@ function GameScreen({
         )}
       </div>
 
-      <ProgressBar value={profile.chestProgress} max={CHEST_MAX} label="Chest" />
+      <section className="piece-tray" aria-label="Available pieces">
+        {run.pieces.map((piece) => (
+          <button
+            className={`piece-slot ${piece.placed ? "placed" : ""}`}
+            type="button"
+            key={piece.id}
+            onPointerDown={(event) => onBeginDrag(event, piece)}
+            disabled={piece.placed || run.isOver}
+            aria-label={piece.placed ? "Placed piece" : `Drag ${piece.name}`}
+          >
+            <PiecePreview piece={piece} skinId={profile.selectedSkin} />
+          </button>
+        ))}
+      </section>
 
-      <section className="power-row" aria-label="Power-ups">
+      <section className="power-row compact-tools" aria-label="Power-ups">
         <button
           className={`power-button ${activePower === "hammer" ? "active" : ""}`}
           type="button"
@@ -477,28 +497,6 @@ function GameScreen({
           {activePower === "hammer" ? "Tap a filled cell" : "Tap the blast center"}
         </div>
       )}
-
-      <section className="piece-tray" aria-label="Available pieces">
-        {run.pieces.map((piece) => (
-          <button
-            className={`piece-slot ${piece.placed ? "placed" : ""}`}
-            type="button"
-            key={piece.id}
-            onPointerDown={(event) => onBeginDrag(event, piece)}
-            disabled={piece.placed || run.isOver}
-            aria-label={piece.placed ? "Placed piece" : `Drag ${piece.name}`}
-          >
-            <PiecePreview piece={piece} skinId={profile.selectedSkin} />
-          </button>
-        ))}
-      </section>
-
-      <nav className="bottom-nav" aria-label="Game navigation">
-        <IconButton icon={Home} label="Menu" onClick={onMenu} />
-        <IconButton icon={Target} label="Missions" onClick={onOpenMissions} />
-        <IconButton icon={ShoppingBag} label="Shop" onClick={onOpenShop} />
-        <IconButton icon={RotateCcw} label="Restart" onClick={onRestart} />
-      </nav>
 
       {drag && (
         <div className="drag-ghost" style={{ transform: `translate(${drag.x}px, ${drag.y}px)` }} aria-hidden="true">
@@ -722,6 +720,7 @@ function ScreenHeader({ title, meta, onBack }) {
 }
 
 function GameOverScreen({ run, profile, onRestart, onMenu, onShop }) {
+  const bestBeat = run.score >= profile.highScore && run.score > 0;
   return (
     <main className="panel-screen game-over">
       <section className="game-over-hero">
@@ -730,12 +729,12 @@ function GameOverScreen({ run, profile, onRestart, onMenu, onShop }) {
         </div>
         <span className="eyebrow">Game Over</span>
         <h1>{run.score.toLocaleString()}</h1>
-        <p>{run.totalLines} lines cleared</p>
+        <p>{bestBeat ? "New best score" : `${run.totalLines} lines cleared`}</p>
       </section>
       <section className="menu-stats">
         <StatPill icon={Trophy} label="Best" value={profile.highScore.toLocaleString()} />
-        <StatPill icon={Coins} label="Coins" value={profile.coins.toLocaleString()} />
-        <StatPill icon={Star} label="Level" value={profile.level} />
+        <StatPill icon={Coins} label="Earned" value={`+${run.coinsEarned || 0}`} />
+        <StatPill icon={Star} label="XP" value={`+${run.xpEarned || 0}`} />
       </section>
       <section className="primary-actions">
         <button className="primary-button" type="button" onClick={onRestart}>
@@ -755,15 +754,35 @@ function GameOverScreen({ run, profile, onRestart, onMenu, onShop }) {
   );
 }
 
-function PauseModal({ onResume, onRestart, onMenu, onSettings }) {
+function PauseModal({ profile, onResume, onRestart, onMenu, onSettings, onMissions, onShop }) {
+  const xpMax = levelThreshold(profile.level);
   return (
     <div className="modal-layer" role="dialog" aria-modal="true">
-      <section className="modal-card pause-card">
-        <h2>Paused</h2>
+      <section className="modal-card pause-card game-menu-card">
+        <h2>Game Menu</h2>
+        <div className="menu-progress">
+          <StatPill icon={Coins} label="Coins" value={profile.coins.toLocaleString()} />
+          <StatPill icon={Star} label="Level" value={profile.level} />
+          <StatPill icon={Gift} label="Chest" value={`${profile.chestProgress}/${CHEST_MAX}`} />
+        </div>
+        <div className="menu-bars">
+          <ProgressBar value={profile.xp} max={xpMax} label="XP" />
+          <ProgressBar value={profile.chestProgress} max={CHEST_MAX} label="Chest" />
+        </div>
         <button className="primary-button" type="button" onClick={onResume}>
           <Play size={20} aria-hidden="true" />
           <span>Resume</span>
         </button>
+        <div className="modal-action-grid">
+          <button className="secondary-button" type="button" onClick={onMissions}>
+            <Target size={18} aria-hidden="true" />
+            <span>Missions</span>
+          </button>
+          <button className="secondary-button" type="button" onClick={onShop}>
+            <ShoppingBag size={18} aria-hidden="true" />
+            <span>Shop</span>
+          </button>
+        </div>
         <button className="secondary-button" type="button" onClick={onRestart}>
           <RotateCcw size={18} aria-hidden="true" />
           <span>Restart</span>
@@ -818,7 +837,71 @@ function ComboFlash({ label }) {
 
 function PraiseFlash({ label }) {
   if (!label) return null;
-  return <div className={`praise-flash intensity-${Math.min(4, Math.ceil(label.length / 4))}`}>{label}</div>;
+  const letters = [...label];
+  const sparks = Array.from({ length: 18 }, (_, index) => ({
+    id: `spark-${index}`,
+    angle: index * 20,
+    distance: 92 + (index % 4) * 18,
+    delay: 25 + index * 18,
+    size: 5 + (index % 3) * 2,
+  }));
+  const shards = Array.from({ length: 10 }, (_, index) => ({
+    id: `shard-${index}`,
+    angle: index * 36 + 12,
+    distance: 76 + (index % 3) * 24,
+    delay: 40 + index * 24,
+  }));
+
+  return (
+    <div className={`praise-flash intensity-${Math.min(4, Math.ceil(label.length / 4))}`}>
+      <span className="praise-shockwave" aria-hidden="true" />
+      <span className="praise-shockwave praise-shockwave-delayed" aria-hidden="true" />
+      <span className="praise-rays" aria-hidden="true" />
+      <span className="praise-glow" aria-hidden="true" />
+      {sparks.map((spark) => (
+        <i
+          className="praise-spark"
+          key={spark.id}
+          style={{
+            "--angle": `${spark.angle}deg`,
+            "--counter-angle": `${-spark.angle}deg`,
+            "--distance": `${spark.distance}px`,
+            "--spark-delay": `${spark.delay}ms`,
+            "--spark-size": `${spark.size}px`,
+          }}
+          aria-hidden="true"
+        />
+      ))}
+      {shards.map((shard) => (
+        <i
+          className="praise-shard"
+          key={shard.id}
+          style={{
+            "--angle": `${shard.angle}deg`,
+            "--counter-angle": `${-shard.angle}deg`,
+            "--distance": `${shard.distance}px`,
+            "--spark-delay": `${shard.delay}ms`,
+          }}
+          aria-hidden="true"
+        />
+      ))}
+      <div className="praise-art">
+        <span className="praise-sweep" aria-hidden="true" />
+        <span className="praise-text" aria-label={label}>
+          {letters.map((letter, index) => (
+            <span
+              className={letter === " " ? "praise-letter gap" : "praise-letter"}
+              key={`${letter}-${index}`}
+              style={{ "--letter-delay": `${index * 24}ms` }}
+              aria-hidden="true"
+            >
+              {letter}
+            </span>
+          ))}
+        </span>
+      </div>
+    </div>
+  );
 }
 
 function LevelFlash({ level }) {
@@ -921,7 +1004,8 @@ function App() {
   }
 
   function finalizeRunAfterMove(baseRun, boardAfterClear, piecesAfterPlacement) {
-    const nextPieces = piecesAfterPlacement.every((piece) => piece.placed) ? generateHand() : piecesAfterPlacement;
+    const generatedPieces = piecesAfterPlacement.every((piece) => piece.placed) ? generateHand() : piecesAfterPlacement;
+    const nextPieces = syncPiecesWithBonus(generatedPieces, baseRun.bonus);
     const isOver = !canAnyPieceFit(boardAfterClear, nextPieces);
     const finalRun = { ...baseRun, board: boardAfterClear, pieces: nextPieces, isOver };
     setRun(finalRun);
@@ -945,44 +1029,69 @@ function App() {
 
     const placedBoard = placePiece(run.board, piece, row, col, profile.selectedSkin);
     const completed = findCompletedLines(placedBoard);
-    const reward = getPlacementReward(piece.cells.length, completed.count, run.combo);
+    const bonusBeforeMove = run.bonus || { active: false, movesLeft: 0, misses: 0 };
+    const reward = getPlacementReward(piece.cells.length, completed.count, run.combo, {
+      bonusActive: bonusBeforeMove.active,
+    });
     const score = run.score + reward.score;
     const totalLines = run.totalLines + completed.count;
-    const piecesAfterPlacement = run.pieces.map((item) => (item.id === pieceId ? { ...item, placed: true } : item));
-    const baseRun = {
-      ...run,
-      board: placedBoard,
-      pieces: piecesAfterPlacement,
-      score,
-      combo: reward.nextCombo,
-      totalLines,
-      moves: run.moves + 1,
-    };
-
+    const nextComboMisses = completed.count > 0 ? 0 : (run.comboMisses || 0) + 1;
+    const comboAfterMove = completed.count > 0 ? reward.nextCombo : nextComboMisses >= 3 ? 0 : run.combo;
+    const bonusTriggered = shouldStartBonusStage({
+      previousLines: run.totalLines,
+      nextLines: totalLines,
+      nextCombo: comboAfterMove,
+      lineCount: completed.count,
+      bonusActive: bonusBeforeMove.active,
+    });
+    const bonusAfterMove = bonusTriggered
+      ? { active: true, movesLeft: BONUS_STAGE.maxMoves, misses: 0 }
+      : advanceBonusStage(bonusBeforeMove, completed.count);
+    const piecesAfterPlacement = syncPiecesWithBonus(
+      run.pieces.map((item) => (item.id === pieceId ? { ...item, placed: true } : item)),
+      bonusAfterMove,
+    );
     const progress = applyGameProgress(profile, {
       score,
       coins: reward.coins,
       xp: reward.xp,
       previousLines: run.totalLines,
       linesCleared: completed.count,
-      comboEvent: reward.nextCombo >= 2 ? 1 : 0,
+      comboEvent: completed.count > 0 && reward.nextCombo >= 2 ? 1 : 0,
     });
+    const baseRun = {
+      ...run,
+      board: placedBoard,
+      pieces: piecesAfterPlacement,
+      score,
+      combo: comboAfterMove,
+      comboMisses: comboAfterMove > 0 ? nextComboMisses : 0,
+      bonus: bonusAfterMove,
+      totalLines,
+      coinsEarned: (run.coinsEarned || 0) + Math.max(0, progress.profile.coins - profile.coins),
+      xpEarned: (run.xpEarned || 0) + reward.xp,
+      moves: run.moves + 1,
+    };
 
     setProfile(progress.profile);
     if (progress.xpRewards.levelsGained > 0) {
       setLevelFlash(progress.profile.level);
       window.setTimeout(() => setLevelFlash(0), 1100);
     }
+    if (bonusTriggered) {
+      notify(`Rush Bonus x${BONUS_STAGE.scoreMultiplier}`);
+      playSound("reward", profile.settings.sound);
+    }
     if (progress.lineRewards.chestReady && progress.profile.chestProgress >= CHEST_MAX) {
       window.setTimeout(() => setChestState({ reward: null }), 360);
     }
 
-    const praise = praiseLabel(completed.count, reward.nextCombo);
+    const praise = praiseLabel(completed.count, comboAfterMove);
     playSound(
       completed.count
         ? completed.count > 1 || reward.nextCombo >= 3
           ? "bigClear"
-          : reward.nextCombo >= 2
+          : comboAfterMove >= 2
             ? "combo"
             : "clear"
         : "place",
@@ -1000,16 +1109,17 @@ function App() {
           delay: (cellRow + cellCol) * 14,
         })),
       );
-      addParticles(22 + completed.count * 16 + reward.nextCombo * 7);
-      flashCombo(reward.nextCombo);
+      addParticles(22 + completed.count * 16 + comboAfterMove * 7);
+      flashCombo(comboAfterMove);
       flashPraise(praise);
-      triggerShake(completed.count > 1 || reward.nextCombo >= 2);
+      triggerShake(completed.count > 1 || comboAfterMove >= 2);
       window.setTimeout(() => {
         setClearMarks([]);
         finalizeRunAfterMove(baseRun, cleared.board, piecesAfterPlacement);
         setClearing(false);
       }, 470);
     } else {
+      addParticles(8);
       finalizeRunAfterMove(baseRun, placedBoard, piecesAfterPlacement);
     }
     return true;
@@ -1092,12 +1202,12 @@ function App() {
       const spent = spendPowerup(profile, "shuffle");
       const fresh = generateHand();
       let nextIndex = 0;
-      const pieces = run.pieces.map((piece) => {
+      const pieces = syncPiecesWithBonus(run.pieces.map((piece) => {
         if (piece.placed) return piece;
         const nextPiece = fresh[nextIndex] || fresh[0];
         nextIndex += 1;
         return nextPiece;
-      });
+      }), run.bonus);
       const nextRun = { ...run, pieces, isOver: !canAnyPieceFit(run.board, pieces) };
       setProfile(spent.profile);
       setRun(nextRun);
@@ -1139,7 +1249,14 @@ function App() {
     });
     const isOver = !canAnyPieceFit(result.board, run.pieces);
     setProfile(progress.profile);
-    setRun({ ...run, board: result.board, score, isOver });
+    setRun({
+      ...run,
+      board: result.board,
+      score,
+      coinsEarned: (run.coinsEarned || 0) + Math.max(0, progress.profile.coins - spent.profile.coins),
+      xpEarned: (run.xpEarned || 0) + Math.max(3, result.removed * 4),
+      isOver,
+    });
     setActivePower(null);
     showReward({ score: scoreGain, coins: Math.floor(scoreGain / 80), lines: 0 });
     addParticles(activePower === "hammer" ? 10 : 24);
@@ -1239,7 +1356,7 @@ function App() {
   };
 
   return (
-    <div className={`app-shell ${shake ? "shake" : ""}`} style={shellStyle}>
+    <div className={`app-shell ${shake ? "shake" : ""} ${run.bonus?.active ? "rush-active" : ""}`} style={shellStyle}>
       <div className="phone-frame">
         {screen === "menu" && (
           <MainMenu
@@ -1274,17 +1391,7 @@ function App() {
             onSelectPowerup={handlePowerup}
             onCellAction={handleCellAction}
             onPause={() => setPaused(true)}
-            onOpenShop={() => {
-              setReturnScreen("game");
-              setScreen("shop");
-            }}
-            onOpenMissions={() => {
-              setReturnScreen("game");
-              setScreen("missions");
-            }}
             onOpenSettings={() => openSettingsScreen("game")}
-            onMenu={() => setScreen("menu")}
-            onRestart={startNewGame}
           />
         )}
         {screen === "shop" && (
@@ -1330,10 +1437,21 @@ function App() {
 
       {paused && (
         <PauseModal
+          profile={profile}
           onResume={() => setPaused(false)}
           onRestart={() => {
             setPaused(false);
             startNewGame();
+          }}
+          onMissions={() => {
+            setPaused(false);
+            setReturnScreen("game");
+            setScreen("missions");
+          }}
+          onShop={() => {
+            setPaused(false);
+            setReturnScreen("game");
+            setScreen("shop");
           }}
           onMenu={() => {
             setPaused(false);

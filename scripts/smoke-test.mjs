@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import {
   BOARD_SIZE,
+  BONUS_STAGE,
   CHEST_MAX,
+  advanceBonusStage,
+  bonusizePieces,
   createEmptyBoard,
   createInitialProfile,
   createRun,
@@ -20,6 +23,7 @@ import {
   removeCell,
   clearArea,
   openChest,
+  shouldStartBonusStage,
 } from "../src/game/gameLogic.js";
 
 const piece = (cells, id = "test") => ({ id, cells, colorIndex: 0, placed: false });
@@ -84,6 +88,23 @@ function fill(board, cells) {
   assert.ok(reward.score > 0, "score should increase");
   assert.ok(reward.coins > 0, "coins should increase on clear");
   assert.equal(reward.nextCombo, 2, "combo should increase after consecutive clear");
+  assert.equal(getPlacementReward(3, 0, 2).nextCombo, 2, "combo should not immediately reset on non-clear move");
+  assert.equal(
+    getPlacementReward(4, 1, 2, { bonusActive: true }).bonusMultiplier,
+    BONUS_STAGE.scoreMultiplier,
+    "bonus stage should apply score multiplier",
+  );
+  assert.equal(
+    shouldStartBonusStage({ previousLines: 4, nextLines: 5, nextCombo: 3, lineCount: 1, bonusActive: false }),
+    true,
+    "combo x3 should trigger bonus stage",
+  );
+  assert.equal(
+    advanceBonusStage(advanceBonusStage({ active: true, movesLeft: 5, misses: 0 }, 0), 0).active,
+    false,
+    "bonus stage should end after two non-clear moves",
+  );
+  assert.equal(bonusizePieces([piece([[0, 0], [0, 1]])])[0].solid, true, "bonus pieces should use one color");
 
   const profile = createInitialProfile("2026-06-13");
   const result = applyGameProgress(profile, {
