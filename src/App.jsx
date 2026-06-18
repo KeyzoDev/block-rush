@@ -30,7 +30,6 @@ import {
   BOARD_SIZE,
   BONUS_STAGE,
   CHEST_MAX,
-  COMBO_MISS_LIMIT,
   MISSION_DEFS,
   POWERUPS,
   SKINS,
@@ -50,11 +49,15 @@ import {
   createRun,
   findCompletedLines,
   generateHand,
+  getBoardClearReward,
+  getGamePhase,
+  handHasBoardClearPath,
   getPieceBounds,
   getPieceColorIndex,
   getPlacementLines,
   getPlacementReward,
   getSkin,
+  isBoardEmpty,
   levelThreshold,
   normalizeCells,
   normalizeProfile,
@@ -75,6 +78,7 @@ import {
 let audioContext;
 let audioMaster;
 let musicNodes;
+let lastVoiceAt = 0;
 
 function readJson(key) {
   try {
@@ -180,6 +184,18 @@ function playSound(kind, enabled, detail = {}) {
     const { context, output } = system;
     const now = context.currentTime + 0.004;
 
+    if (kind === "ui") {
+      scheduleTone(context, output, {
+        frequency: 620,
+        endFrequency: 440,
+        start: now,
+        duration: 0.045,
+        volume: 0.022,
+        type: "sine",
+      });
+      return;
+    }
+
     if (kind === "place") {
       scheduleTone(context, output, {
         frequency: 310,
@@ -241,6 +257,54 @@ function playSound(kind, enabled, detail = {}) {
       return;
     }
 
+    if (kind === "newBest") {
+      [523.25, 659.25, 783.99, 1046.5].forEach((frequency, index) => {
+        scheduleTone(context, output, {
+          frequency,
+          endFrequency: frequency * 1.06,
+          start: now + index * 0.065,
+          duration: 0.22,
+          volume: 0.044,
+          type: index % 2 ? "triangle" : "sine",
+        });
+      });
+      scheduleNoise(context, output, {
+        start: now + 0.08,
+        duration: 0.16,
+        volume: 0.018,
+        frequency: 4200,
+      });
+      return;
+    }
+
+    if (kind === "boardClear") {
+      scheduleTone(context, output, {
+        frequency: 104,
+        endFrequency: 52,
+        start: now,
+        duration: 0.3,
+        volume: 0.075,
+        type: "triangle",
+      });
+      [523.25, 659.25, 783.99, 1046.5, 1318.51].forEach((frequency, index) => {
+        scheduleTone(context, output, {
+          frequency,
+          endFrequency: frequency * 1.12,
+          start: now + 0.035 + index * 0.055,
+          duration: 0.3,
+          volume: index === 4 ? 0.038 : 0.05,
+          type: index % 2 ? "triangle" : "sine",
+        });
+      });
+      scheduleNoise(context, output, {
+        start: now + 0.04,
+        duration: 0.24,
+        volume: 0.042,
+        frequency: 4100,
+      });
+      return;
+    }
+
     if (kind === "praise") {
       [880, 1174.66, 1567.98].forEach((frequency, index) => {
         scheduleTone(context, output, {
@@ -288,6 +352,40 @@ function playSound(kind, enabled, detail = {}) {
     });
   } catch {
     // Audio feedback is optional.
+  }
+}
+
+function speakPraise(label, enabled, intensity = 1, force = false) {
+  if (
+    !enabled ||
+    typeof window === "undefined" ||
+    !window.speechSynthesis ||
+    typeof window.SpeechSynthesisUtterance !== "function" ||
+    document.hidden
+  ) {
+    return;
+  }
+
+  const now = Date.now();
+  if (!force && now - lastVoiceAt < 1700) return;
+  lastVoiceAt = now;
+
+  try {
+    const utterance = new window.SpeechSynthesisUtterance(
+      label.charAt(0) + label.slice(1).toLowerCase(),
+    );
+    const voices = window.speechSynthesis.getVoices();
+    utterance.voice =
+      voices.find((voice) => /^en(-|_)(US|GB)/i.test(voice.lang) && voice.localService) ||
+      voices.find((voice) => /^en/i.test(voice.lang)) ||
+      null;
+    utterance.volume = 0.72;
+    utterance.rate = intensity >= 4 ? 1.02 : 1.08;
+    utterance.pitch = Math.min(1.32, 1.08 + intensity * 0.045);
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+  } catch {
+    // Voice feedback is optional and varies by browser support.
   }
 }
 
@@ -349,8 +447,10 @@ function haptic(enabled, pattern = 18) {
 function praiseLabel(lineCount, combo) {
   if (combo >= 5) return "UNBELIEVABLE";
   if (combo >= 4 || lineCount >= 4) return "EXCELLENT";
-  if (combo >= 3 || lineCount >= 3) return "AMAZING";
-  if (combo >= 2 || lineCount >= 2) return "GREAT";
+  if (combo >= 3) return "AMAZING";
+  if (combo >= 2) return "AWESOME";
+  if (lineCount >= 3) return "GREAT";
+  if (lineCount >= 2) return "GOOD";
   return "";
 }
 
@@ -412,14 +512,7 @@ function ProgressBar({ value, max, label }) {
 }
 
 function PiecePreview({ piece, skinId, compact = false }) {
-  if (!piece || piece.placed) {
-    return (
-      <div className="empty-piece">
-        <Check size={14} aria-hidden="true" />
-        <span>Placed</span>
-      </div>
-    );
-  }
+  if (!piece || piece.placed) return <span className="empty-piece" aria-hidden="true" />;
   const bounds = getPieceBounds(piece);
   const cells = normalizeCells(piece.cells);
   const skin = getSkin(skinId);
@@ -580,20 +673,15 @@ function GameScreen({
   particles,
   lastReward,
   praise,
+  boardClear,
   drag,
   activePower,
   onBeginDrag,
-  onSelectPowerup,
   onCellAction,
   onPause,
-  onOpenSettings,
   tutorialActive,
 }) {
   const skin = getSkin(profile.selectedSkin);
-  const xpMax = levelThreshold(profile.level);
-  const xpPercent = Math.min(100, (profile.xp / xpMax) * 100);
-  const chestPercent = Math.min(100, (profile.chestProgress / CHEST_MAX) * 100);
-  const placedCount = run.pieces.filter((piece) => piece.placed).length;
   const previewCompleted = hover?.valid
     ? getPlacementLines(run.board, hover.piece, hover.row, hover.col, profile.selectedSkin)
     : { rows: [], cols: [], count: 0 };
@@ -614,53 +702,10 @@ function GameScreen({
           <button className="round-button" type="button" onClick={onPause} title="Pause">
             <Pause size={18} aria-hidden="true" />
           </button>
-          <button className="round-button" type="button" onClick={onOpenSettings} title="Settings">
-            <Settings size={18} aria-hidden="true" />
-          </button>
         </div>
       </header>
 
-      <section className="run-progress" aria-label="Run progress">
-        <div className="run-progress-item">
-          <Star size={13} aria-hidden="true" />
-          <span>Lv {profile.level}</span>
-          <div className="micro-track" aria-hidden="true">
-            <i style={{ width: `${xpPercent}%` }} />
-          </div>
-        </div>
-        <div className={`run-progress-item ${profile.chestProgress >= CHEST_MAX ? "ready" : ""}`}>
-          <Gift size={13} aria-hidden="true" />
-          <span>Chest {profile.chestProgress}/{CHEST_MAX}</span>
-          <div className="micro-track" aria-hidden="true">
-            <i style={{ width: `${chestPercent}%` }} />
-          </div>
-        </div>
-      </section>
-
-      {(run.combo > 0 || run.bonus?.active) && (
-        <section className="run-status" aria-label="Active bonuses">
-          {run.combo > 0 && (
-            <div className="combo-meter" aria-live="polite">
-              <span>Chain</span>
-              <strong>x{run.combo}</strong>
-              <div className="combo-life" aria-label={`${COMBO_MISS_LIMIT - run.comboMisses} chain saves left`}>
-                {Array.from({ length: COMBO_MISS_LIMIT }, (_, index) => (
-                  <i className={index < COMBO_MISS_LIMIT - run.comboMisses ? "active" : ""} key={index} />
-                ))}
-              </div>
-            </div>
-          )}
-          {run.bonus?.active && (
-            <div className="rush-meter" aria-live="polite">
-              <Zap size={13} aria-hidden="true" />
-              <span>Rush x{BONUS_STAGE.scoreMultiplier}</span>
-              <strong>{run.bonus.movesLeft}</strong>
-            </div>
-          )}
-        </section>
-      )}
-
-      <div className="board-wrap">
+      <div className={`board-wrap ${boardClear ? "board-clear-active" : ""}`}>
         <Board
           board={run.board}
           boardRef={boardRef}
@@ -672,12 +717,6 @@ function GameScreen({
           activePower={activePower}
           onCellAction={onCellAction}
         />
-        {previewCompleted.count > 0 && (
-          <div className="clear-preview-cue" aria-live="polite">
-            <Zap size={13} aria-hidden="true" />
-            Clear {previewCompleted.count}
-          </div>
-        )}
         <div className="particles" aria-hidden="true">
           {particles.map((particle) => (
             <i
@@ -700,23 +739,20 @@ function GameScreen({
             aria-live="polite"
           >
             <strong>+{lastReward.score}</strong>
-            <span>
-              {lastReward.lines > 0 ? `${lastReward.lines} line${lastReward.lines > 1 ? "s" : ""}` : "Nice move"}
-            </span>
+          </div>
+        )}
+        {boardClear && (
+          <div className="board-clear-flash" role="status" aria-live="assertive">
+            <span>Perfect sweep</span>
+            <strong>
+              BOARD CLEAR{boardClear.streak > 1 ? ` x${boardClear.streak}` : ""}!
+            </strong>
+            <b>+{boardClear.score.toLocaleString()}</b>
           </div>
         )}
       </div>
 
       <section className="piece-zone" aria-label="Available pieces">
-        <div className="hand-status">
-          <span>Place all 3</span>
-          <div className="hand-pips" aria-hidden="true">
-            {run.pieces.map((piece) => (
-              <i className={piece.placed ? "done" : ""} key={piece.id} />
-            ))}
-          </div>
-          <strong>{3 - placedCount} left</strong>
-        </div>
         <div className="piece-tray">
           {run.pieces.map((piece) => (
             <button
@@ -732,45 +768,6 @@ function GameScreen({
           ))}
         </div>
       </section>
-
-      <section className="power-row compact-tools" aria-label="Power-ups">
-        <button
-          className={`power-button ${activePower === "hammer" ? "active" : ""}`}
-          type="button"
-          onClick={() => onSelectPowerup("hammer")}
-          aria-label={`Hammer, ${profile.powerups.hammer || 0} left`}
-          title="Hammer"
-        >
-          <Hammer size={18} aria-hidden="true" />
-          <strong>{profile.powerups.hammer || 0}</strong>
-        </button>
-        <button
-          className="power-button"
-          type="button"
-          onClick={() => onSelectPowerup("shuffle")}
-          aria-label={`Shuffle, ${profile.powerups.shuffle || 0} left`}
-          title="Shuffle"
-        >
-          <Shuffle size={18} aria-hidden="true" />
-          <strong>{profile.powerups.shuffle || 0}</strong>
-        </button>
-        <button
-          className={`power-button ${activePower === "bomb" ? "active" : ""}`}
-          type="button"
-          onClick={() => onSelectPowerup("bomb")}
-          aria-label={`Bomb, ${profile.powerups.bomb || 0} left`}
-          title="Bomb"
-        >
-          <Bomb size={18} aria-hidden="true" />
-          <strong>{profile.powerups.bomb || 0}</strong>
-        </button>
-      </section>
-
-      {activePower && (
-        <div className="tool-cue" aria-live="polite">
-          {activePower === "hammer" ? "Tap a filled cell" : "Tap the blast center"}
-        </div>
-      )}
 
       {drag && (
         <div
@@ -801,35 +798,78 @@ function GameScreen({
 
 function MainMenu({ run, profile, onPlay, onNewGame, onShop, onMissions, onSettings }) {
   const hasSavedRun = run.moves > 0 && !run.isOver;
+  const visiblePieces = run.pieces.filter((piece) => !piece.placed).slice(0, 3);
+  const chestPercent = Math.min(100, (profile.chestProgress / CHEST_MAX) * 100);
   return (
     <main className="menu-screen">
-      <section className="brand-panel">
-        <span className="eyebrow">8x8 puzzle</span>
-        <h1>Block Rush</h1>
-        <p>Place pieces, clear lines, chain combos, and unlock bright block styles.</p>
+      <div className="menu-ambient" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </div>
+
+      <section className="menu-hero">
+        <div className="menu-copy">
+          <span className="menu-kicker">
+            <Zap size={13} aria-hidden="true" />
+            8x8 block puzzle
+          </span>
+          <h1 className="menu-logo">
+            <span>Block</span>
+            <strong>Rush</strong>
+          </h1>
+          <p>Fit smart. Clear lines. Keep the rush alive.</p>
+        </div>
+        <div className="menu-block-showcase" aria-hidden="true">
+          <span className="showcase-glow" />
+          {visiblePieces.map((piece, index) => (
+            <div className={`showcase-piece piece-${index + 1}`} key={piece.id}>
+              <PiecePreview piece={piece} skinId={profile.selectedSkin} />
+            </div>
+          ))}
+        </div>
       </section>
 
-      <section className="menu-stats">
-        <StatPill icon={Trophy} label="Best" value={profile.highScore.toLocaleString()} />
-        <StatPill icon={Coins} label="Coins" value={profile.coins.toLocaleString()} />
-        <StatPill icon={Star} label="Level" value={profile.level} />
+      <section className="menu-dashboard">
+        <div className="best-score-card">
+          <span><Trophy size={15} aria-hidden="true" /> Best score</span>
+          <strong>{profile.highScore.toLocaleString()}</strong>
+        </div>
+        <div className="menu-resource">
+          <span><Coins size={15} aria-hidden="true" /> Coins</span>
+          <strong>{profile.coins.toLocaleString()}</strong>
+        </div>
+        <div className="menu-resource">
+          <span><Star size={15} aria-hidden="true" /> Level</span>
+          <strong>{profile.level}</strong>
+        </div>
       </section>
 
-      <section className="primary-actions">
+      <section className="menu-actions">
         <button className="primary-button" type="button" onClick={hasSavedRun ? onPlay : onNewGame}>
           <Play size={20} aria-hidden="true" />
-          <span>{hasSavedRun ? "Continue" : "Play"}</span>
+          <span>{hasSavedRun ? "Continue Rush" : "Play Now"}</span>
         </button>
-        <button className="secondary-button" type="button" onClick={onNewGame}>
-          <RotateCcw size={18} aria-hidden="true" />
-          <span>New Game</span>
-        </button>
+        {hasSavedRun && (
+          <button className="new-run-button" type="button" onClick={onNewGame}>
+            <RotateCcw size={15} aria-hidden="true" />
+            <span>Start fresh</span>
+          </button>
+        )}
       </section>
 
+      <button className="menu-chest-progress" type="button" onClick={onMissions}>
+        <span className="menu-chest-icon"><Gift size={20} aria-hidden="true" /></span>
+        <span className="menu-chest-copy">
+          <strong>{profile.chestProgress >= CHEST_MAX ? "Reward ready" : "Next reward"}</strong>
+          <i><b style={{ width: `${chestPercent}%` }} /></i>
+        </span>
+        <span>{profile.chestProgress}/{CHEST_MAX}</span>
+      </button>
+
       <nav className="menu-grid" aria-label="Main menu">
-        <IconButton icon={ShoppingBag} label="Shop" onClick={onShop} />
+        <IconButton icon={ShoppingBag} label="Themes" onClick={onShop} />
         <IconButton icon={Target} label="Missions" onClick={onMissions} />
-        <IconButton icon={Gift} label="Chest" onClick={onMissions} />
         <IconButton icon={Settings} label="Settings" onClick={onSettings} />
       </nav>
     </main>
@@ -973,7 +1013,7 @@ function SettingsScreen({ profile, onBack, onToggleSetting, onResetProgress, con
         </button>
         <button className="setting-row" type="button" onClick={() => onToggleSetting("voice")}>
           <Mic2 size={20} aria-hidden="true" />
-          <span>Announcer FX</span>
+          <span>Voice feedback</span>
           <strong>{profile.settings.voice ? "On" : "Off"}</strong>
         </button>
         <button className="setting-row" type="button" onClick={() => onToggleSetting("music")}>
@@ -1011,7 +1051,8 @@ function ScreenHeader({ title, meta, onBack }) {
 }
 
 function GameOverScreen({ run, profile, onRestart, onMenu, onShop }) {
-  const bestBeat = run.score >= profile.highScore && run.score > 0;
+  const bestBeat = run.score > (run.bestAtStart || 0);
+  const motivation = bestBeat ? "New best!" : run.score >= profile.highScore * 0.85 ? "So close!" : "One more round?";
   return (
     <main className="panel-screen game-over">
       <section className="game-over-hero">
@@ -1020,17 +1061,19 @@ function GameOverScreen({ run, profile, onRestart, onMenu, onShop }) {
         </div>
         <span className="eyebrow">Game Over</span>
         <h1>{run.score.toLocaleString()}</h1>
-        <p>{bestBeat ? "New best score" : `${run.totalLines} lines cleared`}</p>
+        {bestBeat && <span className="new-best-badge">New Best</span>}
+        <p>{motivation}</p>
       </section>
-      <section className="menu-stats">
+      <section className="result-stats">
         <StatPill icon={Trophy} label="Best" value={profile.highScore.toLocaleString()} />
+        <StatPill icon={Zap} label="Lines" value={run.totalLines} />
+        <StatPill icon={Star} label="Best combo" value={`x${run.biggestCombo || 0}`} />
         <StatPill icon={Coins} label="Earned" value={`+${run.coinsEarned || 0}`} />
-        <StatPill icon={Star} label="XP" value={`+${run.xpEarned || 0}`} />
       </section>
       <section className="primary-actions">
         <button className="primary-button" type="button" onClick={onRestart}>
           <RotateCcw size={20} aria-hidden="true" />
-          <span>Restart</span>
+          <span>Play Again</span>
         </button>
         <button className="secondary-button" type="button" onClick={onShop}>
           <ShoppingBag size={18} aria-hidden="true" />
@@ -1045,7 +1088,7 @@ function GameOverScreen({ run, profile, onRestart, onMenu, onShop }) {
   );
 }
 
-function PauseModal({ profile, onResume, onRestart, onMenu, onSettings, onMissions, onShop }) {
+function PauseModal({ profile, onResume, onRestart, onMenu, onSettings, onMissions, onShop, onPowerup }) {
   const xpMax = levelThreshold(profile.level);
   return (
     <div className="modal-layer" role="dialog" aria-modal="true">
@@ -1059,6 +1102,23 @@ function PauseModal({ profile, onResume, onRestart, onMenu, onSettings, onMissio
         <div className="menu-bars">
           <ProgressBar value={profile.xp} max={xpMax} label="XP" />
           <ProgressBar value={profile.chestProgress} max={CHEST_MAX} label="Chest" />
+        </div>
+        <div className="pause-tools" aria-label="Power-ups">
+          <button type="button" onClick={() => onPowerup("hammer")}>
+            <Hammer size={18} aria-hidden="true" />
+            <span>Hammer</span>
+            <strong>{profile.powerups.hammer || 0}</strong>
+          </button>
+          <button type="button" onClick={() => onPowerup("shuffle")}>
+            <Shuffle size={18} aria-hidden="true" />
+            <span>Shuffle</span>
+            <strong>{profile.powerups.shuffle || 0}</strong>
+          </button>
+          <button type="button" onClick={() => onPowerup("bomb")}>
+            <Bomb size={18} aria-hidden="true" />
+            <span>Bomb</span>
+            <strong>{profile.powerups.bomb || 0}</strong>
+          </button>
         </div>
         <button className="primary-button" type="button" onClick={onResume}>
           <Play size={20} aria-hidden="true" />
@@ -1123,82 +1183,19 @@ function Toast({ toast }) {
 
 function PraiseFlash({ label, combo }) {
   if (!label) return null;
-  const letters = [...label];
-  const sparks = Array.from({ length: 18 }, (_, index) => ({
-    id: `spark-${index}`,
-    angle: index * 20,
-    distance: 92 + (index % 4) * 18,
-    delay: 25 + index * 18,
-    size: 5 + (index % 3) * 2,
-  }));
-  const shards = Array.from({ length: 10 }, (_, index) => ({
-    id: `shard-${index}`,
-    angle: index * 36 + 12,
-    distance: 76 + (index % 3) * 24,
-    delay: 40 + index * 24,
-  }));
-
   return (
-    <div className={`praise-flash intensity-${Math.min(4, Math.ceil(label.length / 4))}`}>
-      <span className="praise-shockwave" aria-hidden="true" />
-      <span className="praise-shockwave praise-shockwave-delayed" aria-hidden="true" />
-      <span className="praise-rays" aria-hidden="true" />
-      <span className="praise-glow" aria-hidden="true" />
-      {sparks.map((spark) => (
-        <i
-          className="praise-spark"
-          key={spark.id}
-          style={{
-            "--angle": `${spark.angle}deg`,
-            "--counter-angle": `${-spark.angle}deg`,
-            "--distance": `${spark.distance}px`,
-            "--spark-delay": `${spark.delay}ms`,
-            "--spark-size": `${spark.size}px`,
-          }}
-          aria-hidden="true"
-        />
-      ))}
-      {shards.map((shard) => (
-        <i
-          className="praise-shard"
-          key={shard.id}
-          style={{
-            "--angle": `${shard.angle}deg`,
-            "--counter-angle": `${-shard.angle}deg`,
-            "--distance": `${shard.distance}px`,
-            "--spark-delay": `${shard.delay}ms`,
-          }}
-          aria-hidden="true"
-        />
-      ))}
-      <div className="praise-art">
-        <span className="praise-sweep" aria-hidden="true" />
-        <span className="praise-kicker">{combo >= 2 ? `Combo x${combo}` : "Multi clear"}</span>
-        <span className="praise-text" aria-label={label}>
-          {letters.map((letter, index) => (
-            <span
-              className={letter === " " ? "praise-letter gap" : "praise-letter"}
-              key={`${letter}-${index}`}
-              style={{ "--letter-delay": `${index * 24}ms` }}
-              aria-hidden="true"
-            >
-              {letter}
-            </span>
-          ))}
-        </span>
-      </div>
+    <div className="praise-flash simple-praise" aria-live="polite">
+      {combo >= 2 && <span>Combo x{combo}</span>}
+      <strong>{label}</strong>
     </div>
   );
 }
 
-function LevelFlash({ level }) {
-  if (!level) return null;
-  return <div className="level-flash">Level {level}</div>;
-}
-
 function App() {
   const [profile, setProfile] = useState(() => normalizeProfile(readJson(STORAGE_KEYS.profile)));
-  const [run, setRun] = useState(() => reviveRunFromStorage(readJson(STORAGE_KEYS.run)) || createRun());
+  const [run, setRun] = useState(
+    () => reviveRunFromStorage(readJson(STORAGE_KEYS.run)) || createRun(Math.random, profile.highScore),
+  );
   const [screen, setScreen] = useState("menu");
   const [returnScreen, setReturnScreen] = useState("menu");
   const [drag, setDrag] = useState(null);
@@ -1209,7 +1206,7 @@ function App() {
   const [particles, setParticles] = useState([]);
   const [toast, setToast] = useState("");
   const [praiseFlash, setPraiseFlash] = useState(null);
-  const [levelFlash, setLevelFlash] = useState(0);
+  const [boardClearFlash, setBoardClearFlash] = useState(null);
   const [lastReward, setLastReward] = useState(null);
   const [chestState, setChestState] = useState(null);
   const [paused, setPaused] = useState(false);
@@ -1221,9 +1218,11 @@ function App() {
   const toastTimer = useRef(null);
   const rewardTimer = useRef(null);
   const praiseTimer = useRef(null);
+  const boardClearTimer = useRef(null);
   const gameOverTimer = useRef(null);
   const landingTimer = useRef(null);
   const hoverRef = useRef(null);
+  const lastValidHoverRef = useRef(null);
   const dragFrame = useRef(null);
   const pendingPointer = useRef(null);
   const audioUnlockedRef = useRef(false);
@@ -1279,12 +1278,15 @@ function App() {
     window.setTimeout(() => setParticles([]), 760);
   }
 
-  function flashPraise(label, combo) {
+  function flashPraise(label, combo, lineCount) {
     if (!label) return;
     setPraiseFlash({ label, combo });
     window.clearTimeout(praiseTimer.current);
-    praiseTimer.current = window.setTimeout(() => setPraiseFlash(null), 1180);
-    playSound("praise", profile.settings.voice && audioUnlockedRef.current);
+    praiseTimer.current = window.setTimeout(() => setPraiseFlash(null), 900);
+    const intensity = Math.max(lineCount, combo);
+    if (intensity >= 2) {
+      speakPraise(label, profile.settings.voice && audioUnlockedRef.current, intensity);
+    }
   }
 
   function triggerShake(strong = false) {
@@ -1294,13 +1296,39 @@ function App() {
   }
 
   function finalizeRunAfterMove(baseRun, boardAfterClear, piecesAfterPlacement) {
-    const generatedPieces = piecesAfterPlacement.every((piece) => piece.placed) ? generateHand() : piecesAfterPlacement;
+    const refreshedHand = piecesAfterPlacement.every((piece) => piece.placed);
+    const generatedPieces = refreshedHand
+      ? generateHand(Math.random, Date.now(), {
+          board: boardAfterClear,
+          moves: baseRun.moves,
+          score: baseRun.score,
+          totalLines: baseRun.totalLines,
+          combo: baseRun.combo,
+          comboMisses: baseRun.comboMisses,
+          boardClearPity: baseRun.boardClearPity,
+          previousShapeIds: piecesAfterPlacement.map((piece) => piece.shapeId),
+        })
+      : piecesAfterPlacement;
     const nextPieces = syncPiecesWithBonus(generatedPieces, baseRun.bonus);
+    const offeredBoardClear = refreshedHand && handHasBoardClearPath(boardAfterClear, nextPieces, {
+      moves: baseRun.moves,
+      score: baseRun.score,
+      totalLines: baseRun.totalLines,
+    });
     const isOver = !canAnyPieceFit(boardAfterClear, nextPieces);
-    const finalRun = { ...baseRun, board: boardAfterClear, pieces: nextPieces, isOver };
+    const finalRun = {
+      ...baseRun,
+      board: boardAfterClear,
+      pieces: nextPieces,
+      boardClearPity: offeredBoardClear ? 0 : baseRun.boardClearPity,
+      isOver,
+    };
     setRun(finalRun);
     if (isOver) {
-      playSound("gameOver", profile.settings.sound);
+      playSound(
+        finalRun.score > (finalRun.bestAtStart || 0) ? "newBest" : "gameOver",
+        profile.settings.sound,
+      );
       window.clearTimeout(gameOverTimer.current);
       gameOverTimer.current = window.setTimeout(() => setScreen("gameover"), 520);
     }
@@ -1319,11 +1347,6 @@ function App() {
     }
 
     const placedBoard = placePiece(run.board, piece, row, col, profile.selectedSkin);
-    const pieceBounds = getPieceBounds(piece);
-    const placementCenter = {
-      left: ((col + pieceBounds.width / 2) / BOARD_SIZE) * 100,
-      top: ((row + pieceBounds.height / 2) / BOARD_SIZE) * 100,
-    };
     setLandingMarks(
       piece.cells.map(([cellRow, cellCol], index) => ({
         row: row + cellRow,
@@ -1334,14 +1357,28 @@ function App() {
     window.clearTimeout(landingTimer.current);
     landingTimer.current = window.setTimeout(() => setLandingMarks([]), 460);
     const completed = findCompletedLines(placedBoard);
+    const cleared = completed.count > 0 ? clearCompletedLines(placedBoard, completed) : null;
     const bonusBeforeMove = run.bonus || { active: false, movesLeft: 0, misses: 0 };
     const reward = getPlacementReward(piece.cells.length, completed.count, run.combo, {
       bonusActive: bonusBeforeMove.active,
     });
-    const score = run.score + reward.score;
     const totalLines = run.totalLines + completed.count;
     const comboState = advanceComboState(run.combo, run.comboMisses || 0, completed.count);
     const comboAfterMove = comboState.combo;
+    const boardClear = Boolean(cleared && isBoardEmpty(cleared.board));
+    const boardClearStreak = (run.boardClears || 0) + (boardClear ? 1 : 0);
+    const boardClearReward = boardClear
+      ? getBoardClearReward(
+          comboAfterMove,
+          getGamePhase({
+            moves: run.moves + 1,
+            score: run.score + reward.score,
+            totalLines,
+          }),
+          boardClearStreak,
+        )
+      : { score: 0, coins: 0, xp: 0 };
+    const score = run.score + reward.score + boardClearReward.score;
     const bonusTriggered = shouldStartBonusStage({
       previousLines: run.totalLines,
       nextLines: totalLines,
@@ -1358,8 +1395,8 @@ function App() {
     );
     const progress = applyGameProgress(profile, {
       score,
-      coins: reward.coins,
-      xp: reward.xp,
+      coins: reward.coins + boardClearReward.coins,
+      xp: reward.xp + boardClearReward.xp,
       previousLines: run.totalLines,
       linesCleared: completed.count,
       comboEvent: completed.count > 0 && reward.nextCombo >= 2 ? 1 : 0,
@@ -1370,30 +1407,34 @@ function App() {
       pieces: piecesAfterPlacement,
       score,
       combo: comboAfterMove,
+      biggestCombo: Math.max(run.biggestCombo || 0, comboAfterMove),
       comboMisses: comboState.misses,
       bonus: bonusAfterMove,
       totalLines,
       coinsEarned: (run.coinsEarned || 0) + Math.max(0, progress.profile.coins - profile.coins),
-      xpEarned: (run.xpEarned || 0) + reward.xp,
+      xpEarned: (run.xpEarned || 0) + reward.xp + boardClearReward.xp,
       moves: run.moves + 1,
+      boardClearPity: boardClear ? 0 : (run.boardClearPity || 0) + 1,
+      boardClears: boardClearStreak,
     };
 
     setProfile(progress.profile);
     if (progress.xpRewards.levelsGained > 0) {
-      setLevelFlash(progress.profile.level);
-      window.setTimeout(() => setLevelFlash(0), 1100);
+      notify(`Level ${progress.profile.level}`);
     }
     if (bonusTriggered) {
       notify(`Rush Bonus x${BONUS_STAGE.scoreMultiplier}`);
       playSound("reward", profile.settings.sound);
     }
-    if (progress.lineRewards.chestReady && progress.profile.chestProgress >= CHEST_MAX) {
-      window.setTimeout(() => setChestState({ reward: null }), 360);
+    if (profile.chestProgress < CHEST_MAX && progress.profile.chestProgress >= CHEST_MAX) {
+      notify("Chest ready");
     }
 
-    const praise = praiseLabel(completed.count, comboAfterMove);
+    const praise = boardClear ? "" : praiseLabel(completed.count, comboAfterMove);
     playSound(
-      completed.count
+      boardClear
+        ? "boardClear"
+        : completed.count
         ? completed.count > 1 || reward.nextCombo >= 3
           ? "bigClear"
           : comboAfterMove >= 2
@@ -1406,7 +1447,6 @@ function App() {
     if (completed.count > 0) {
       setRun(baseRun);
       setClearing(true);
-      const cleared = clearCompletedLines(placedBoard, completed);
       const rewardCenter = cleared.clearedCells.reduce(
         (center, [cellRow, cellCol]) => ({
           row: center.row + cellRow / cleared.clearedCells.length,
@@ -1425,31 +1465,33 @@ function App() {
         })),
       );
       showReward({
-        score: reward.score,
-        coins: reward.coins,
+        score: reward.score + boardClearReward.score,
+        coins: reward.coins + boardClearReward.coins,
         lines: completed.count,
         left: ((rewardCenter.col + 0.5) / BOARD_SIZE) * 100,
         top: ((rewardCenter.row + 0.5) / BOARD_SIZE) * 100,
       });
-      addParticles(18 + completed.count * 12 + comboAfterMove * 5, cleared.clearedCells);
-      flashPraise(praise, comboAfterMove);
-      triggerShake(completed.count > 1 || comboAfterMove >= 2);
+      addParticles(
+        boardClear ? 72 : 18 + completed.count * 12 + comboAfterMove * 5,
+        boardClear ? [[3.5, 3.5]] : cleared.clearedCells,
+      );
+      if (boardClear) {
+        setBoardClearFlash({ ...boardClearReward, streak: boardClearStreak });
+        window.clearTimeout(boardClearTimer.current);
+        boardClearTimer.current = window.setTimeout(() => setBoardClearFlash(null), 1250);
+        window.clearTimeout(praiseTimer.current);
+        setPraiseFlash(null);
+        speakPraise("BOARD CLEAR!", profile.settings.voice && audioUnlockedRef.current, 6, true);
+      } else {
+        flashPraise(praise, comboAfterMove, completed.count);
+      }
+      triggerShake(boardClear || completed.count > 1 || comboAfterMove >= 2);
       window.setTimeout(() => {
         setClearMarks([]);
         finalizeRunAfterMove(baseRun, cleared.board, piecesAfterPlacement);
         setClearing(false);
-      }, 470);
+      }, boardClear ? 660 : 470);
     } else {
-      showReward({
-        score: reward.score,
-        coins: reward.coins,
-        lines: 0,
-        ...placementCenter,
-      });
-      addParticles(Math.min(9, 4 + piece.cells.length), piece.cells.map(([cellRow, cellCol]) => [
-        row + cellRow,
-        col + cellCol,
-      ]));
       haptic(profile.settings.haptics, 8);
       finalizeRunAfterMove(baseRun, placedBoard, piecesAfterPlacement);
     }
@@ -1480,9 +1522,13 @@ function App() {
     if (cell) {
       const nextHover = { ...cell, piece, valid: canPlacePiece(run.board, piece, cell.row, cell.col) };
       hoverRef.current = nextHover;
+      lastValidHoverRef.current = nextHover.valid
+        ? { ...nextHover, x: event.clientX, y: event.clientY }
+        : null;
       setHover(nextHover);
     } else {
       hoverRef.current = null;
+      lastValidHoverRef.current = null;
       setHover(null);
     }
   }
@@ -1498,6 +1544,9 @@ function App() {
         ? { ...cell, piece: drag.piece, valid: canPlacePiece(run.board, drag.piece, cell.row, cell.col) }
         : null;
       hoverRef.current = nextHover;
+      if (nextHover?.valid) {
+        lastValidHoverRef.current = { ...nextHover, x: point.x, y: point.y };
+      }
       setHover(nextHover);
     }
 
@@ -1513,11 +1562,19 @@ function App() {
       }
     }
 
-    function finishDrag(shouldPlace) {
+    function finishDrag(shouldPlace, releasePoint) {
       if (dragFrame.current) window.cancelAnimationFrame(dragFrame.current);
       dragFrame.current = null;
       pendingPointer.current = null;
-      const target = hoverRef.current;
+      const fallback = lastValidHoverRef.current;
+      const fallbackDistance = fallback && releasePoint
+        ? Math.hypot(releasePoint.x - fallback.x, releasePoint.y - fallback.y)
+        : Number.POSITIVE_INFINITY;
+      const target = hoverRef.current?.valid
+        ? hoverRef.current
+        : fallbackDistance <= drag.cellSize * 0.95
+          ? fallback
+          : hoverRef.current;
       if (shouldPlace && target?.valid) {
         handlePlacePiece(drag.pieceId, target.row, target.col);
       } else if (shouldPlace && target && !target.valid) {
@@ -1527,12 +1584,14 @@ function App() {
       setDrag(null);
       setHover(null);
       hoverRef.current = null;
+      lastValidHoverRef.current = null;
     }
 
     function onUp(event) {
       if (event.pointerId !== drag.pointerId) return;
-      updatePointer({ x: event.clientX, y: event.clientY });
-      finishDrag(true);
+      const releasePoint = { x: event.clientX, y: event.clientY };
+      updatePointer(releasePoint);
+      finishDrag(true, releasePoint);
     }
 
     function onCancel(event) {
@@ -1553,7 +1612,7 @@ function App() {
 
   function startNewGame() {
     unlockAudio();
-    const nextRun = createRun();
+    const nextRun = createRun(Math.random, profile.highScore);
     window.clearTimeout(gameOverTimer.current);
     setRun(nextRun);
     setPaused(false);
@@ -1583,7 +1642,15 @@ function App() {
 
     if (powerupId === "shuffle") {
       const spent = spendPowerup(profile, "shuffle");
-      const fresh = generateHand();
+      const fresh = generateHand(Math.random, Date.now(), {
+        board: run.board,
+        moves: run.moves,
+        score: run.score,
+        totalLines: run.totalLines,
+        combo: run.combo,
+        comboMisses: run.comboMisses,
+        previousShapeIds: run.pieces.filter((piece) => !piece.placed).map((piece) => piece.shapeId),
+      });
       let nextIndex = 0;
       const pieces = syncPiecesWithBonus(run.pieces.map((piece) => {
         if (piece.placed) return piece;
@@ -1719,9 +1786,18 @@ function App() {
     });
   }
 
+  function handleGlobalButtonClick(event) {
+    const button = event.target.closest("button");
+    if (!button || button.disabled || button.classList.contains("piece-slot") || button.classList.contains("board-cell")) {
+      return;
+    }
+    unlockAudio();
+    playSound("ui", profile.settings.sound);
+  }
+
   function confirmResetProgress() {
     const nextProfile = createInitialProfile();
-    const nextRun = createRun();
+    const nextRun = createRun(Math.random, nextProfile.highScore);
     setProfile(nextProfile);
     setRun(nextRun);
     setScreen("menu");
@@ -1739,7 +1815,11 @@ function App() {
   };
 
   return (
-    <div className={`app-shell ${shake ? "shake" : ""} ${run.bonus?.active ? "rush-active" : ""}`} style={shellStyle}>
+    <div
+      className={`app-shell ${shake ? "shake" : ""} ${run.bonus?.active ? "rush-active" : ""}`}
+      style={shellStyle}
+      onClickCapture={handleGlobalButtonClick}
+    >
       <div className="phone-frame">
         {screen === "menu" && (
           <MainMenu
@@ -1769,13 +1849,12 @@ function App() {
             particles={particles}
             lastReward={lastReward}
             praise={praiseFlash}
+            boardClear={boardClearFlash}
             drag={drag}
             activePower={activePower}
             onBeginDrag={handleBeginDrag}
-            onSelectPowerup={handlePowerup}
             onCellAction={handleCellAction}
             onPause={() => setPaused(true)}
-            onOpenSettings={() => openSettingsScreen("game")}
             tutorialActive={!profile.tutorialSeen && run.moves === 0}
           />
         )}
@@ -1846,11 +1925,14 @@ function App() {
             setPaused(false);
             openSettingsScreen("game");
           }}
+          onPowerup={(powerupId) => {
+            setPaused(false);
+            handlePowerup(powerupId);
+          }}
         />
       )}
       {chestState && <ChestModal state={chestState} onOpen={handleChestReward} onClose={() => setChestState(null)} />}
       <Toast toast={toast} />
-      <LevelFlash level={levelFlash} />
     </div>
   );
 }

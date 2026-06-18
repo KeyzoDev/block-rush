@@ -3,6 +3,7 @@ import {
   BOARD_SIZE,
   BONUS_STAGE,
   CHEST_MAX,
+  PIECE_SHAPES,
   advanceBonusStage,
   advanceComboState,
   bonusizePieces,
@@ -16,6 +17,16 @@ import {
   canAnyPieceFit,
   getPlacementReward,
   getPlacementLines,
+  getAdaptiveShapeWeight,
+  getBoardFullness,
+  getBoardClearReward,
+  getGamePhase,
+  handHasBoardClearPath,
+  getShapeClearOpportunity,
+  getShapeBoardClearOpportunity,
+  GAME_PHASES,
+  isBoardEmpty,
+  generateHand,
   applyGameProgress,
   claimMission,
   buySkin,
@@ -48,6 +59,73 @@ function fill(board, cells) {
     normalizeProfile({ ...profile, tutorialSeen: true }, "2026-06-18").tutorialSeen,
     true,
     "tutorial completion should persist",
+  );
+}
+
+{
+  const empty = createEmptyBoard();
+  const crowded = fill(
+    empty,
+    Array.from({ length: BOARD_SIZE * BOARD_SIZE - 1 }, (_, index) => [
+      Math.floor(index / BOARD_SIZE),
+      index % BOARD_SIZE,
+    ]),
+  );
+  const singleShape = PIECE_SHAPES.find((shape) => shape.id === "single");
+  const bigShape = PIECE_SHAPES.find((shape) => shape.id === "box3");
+
+  assert.equal(getBoardFullness(empty), 0, "empty board fullness should be zero");
+  assert.ok(getBoardFullness(crowded) > 0.9, "crowded board fullness should be high");
+  assert.ok(
+    getAdaptiveShapeWeight(singleShape, { board: crowded, moves: 20 }) >
+      getAdaptiveShapeWeight(singleShape, { board: empty, moves: 20 }),
+    "crowded boards should favor small helpful pieces",
+  );
+  assert.equal(getGamePhase({ moves: 35, score: 8000, totalLines: 20 }), GAME_PHASES.warmup);
+  assert.equal(getGamePhase({ moves: 36, score: 4000, totalLines: 12 }), GAME_PHASES.normal);
+  assert.equal(getGamePhase({ moves: 70, score: 12000, totalLines: 40 }), GAME_PHASES.pressure);
+  assert.equal(getGamePhase({ moves: 110, score: 26000, totalLines: 80 }), GAME_PHASES.highScore);
+
+  const nearClear = fill(
+    createEmptyBoard(),
+    Array.from({ length: 6 }, (_, col) => [0, col]),
+  );
+  const duoH = PIECE_SHAPES.find((shape) => shape.id === "duo-h");
+  assert.equal(
+    getShapeClearOpportunity(nearClear, duoH),
+    1,
+    "generator should detect a shape that can complete a near-clear line",
+  );
+  assert.equal(
+    getShapeBoardClearOpportunity(nearClear, duoH),
+    true,
+    "generator should recognize a piece that can create a complete board clear",
+  );
+  assert.equal(
+    handHasBoardClearPath(nearClear, [
+      { shapeId: "duo-h", cells: duoH.cells },
+      { shapeId: "single", cells: singleShape.cells },
+      { shapeId: "single", cells: singleShape.cells },
+    ]),
+    true,
+    "Fun Director should detect Board Clear paths across a full hand",
+  );
+  assert.ok(
+    getAdaptiveShapeWeight(duoH, { board: nearClear, moves: 5 }) >
+      getAdaptiveShapeWeight(duoH, { board: createEmptyBoard(), moves: 5 }),
+    "warm-up generation should favor useful clear opportunities",
+  );
+  assert.ok(
+    getAdaptiveShapeWeight(bigShape, { board: empty, moves: 2 }) <
+      getAdaptiveShapeWeight(bigShape, { board: empty, moves: 70 }),
+    "early game should suppress large awkward pieces",
+  );
+
+  const crowdedHand = generateHand(() => 0.5, 123, { board: crowded, moves: 20 });
+  assert.equal(
+    crowdedHand.every((item) => item.shapeId === "single"),
+    true,
+    "generated pieces should remain usable when only a single cell fits",
   );
 }
 
@@ -95,6 +173,23 @@ function fill(board, cells) {
 }
 
 {
+  for (const shape of PIECE_SHAPES) {
+    const testPiece = piece(shape.cells, shape.id);
+    assert.equal(
+      canPlacePiece(createEmptyBoard(), testPiece, 0, 0),
+      true,
+      `${shape.name} should fit on an empty board`,
+    );
+    const placed = placePiece(createEmptyBoard(), testPiece, 0, 0);
+    assert.equal(
+      placed.flat().filter(Boolean).length,
+      shape.cells.length,
+      `${shape.name} should place every cell`,
+    );
+  }
+}
+
+{
   let board = createEmptyBoard();
   board = fill(board, Array.from({ length: 7 }, (_, col) => [0, col]));
   const placed = placePiece(board, piece([[0, 0]]), 0, 7);
@@ -106,6 +201,18 @@ function fill(board, cells) {
     "placement preview should match the resulting row clear",
   );
   assert.equal(clearCompletedLines(placed, completed).board[0].every((cell) => cell === null), true);
+  const cleared = clearCompletedLines(placed, completed);
+  assert.equal(isBoardEmpty(cleared.board), true, "clearing the only occupied row should create a board clear");
+  const boardClearReward = getBoardClearReward(2, GAME_PHASES.pressure, 2);
+  assert.equal(boardClearReward.score, 5250, "board clear score should include phase, combo, and streak bonuses");
+  assert.ok(boardClearReward.coins > 0, "board clear should award coins");
+  assert.ok(boardClearReward.xp > 0, "board clear should award XP");
+}
+
+{
+  assert.equal(isBoardEmpty(createEmptyBoard()), true, "fresh board should be structurally empty");
+  const occupied = placePiece(createEmptyBoard(), piece([[0, 0]]), 4, 4);
+  assert.equal(isBoardEmpty(occupied), false, "occupied board should not count as empty");
 }
 
 {
@@ -232,6 +339,16 @@ function fill(board, cells) {
   assert.equal(run.board.length, BOARD_SIZE, "restart should create a fresh board");
   assert.equal(run.score, 0, "restart should reset score");
   assert.equal(run.pieces.length, 3, "restart should generate three pieces");
+  assert.equal(run.biggestCombo, 0, "restart should reset biggest combo");
+  assert.equal(run.bestAtStart, 0, "run should remember the best score at its start");
+  assert.equal(run.boardClearPity, 0, "restart should reset Board Clear pity");
+  assert.equal(run.boardClears, 0, "restart should reset Board Clear streak");
+  assert.equal(
+    handHasBoardClearPath(run.board, run.pieces, { moves: 0 }),
+    true,
+    "opening hand should deliberately offer a realistic Board Clear path",
+  );
+  assert.equal(createRun(() => 0.2, 900).bestAtStart, 900, "new run should preserve starting best score");
 }
 
 console.log("Smoke tests passed");
