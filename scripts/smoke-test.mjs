@@ -4,6 +4,7 @@ import {
   BONUS_STAGE,
   CHEST_MAX,
   advanceBonusStage,
+  advanceComboState,
   bonusizePieces,
   createEmptyBoard,
   createInitialProfile,
@@ -14,6 +15,7 @@ import {
   clearCompletedLines,
   canAnyPieceFit,
   getPlacementReward,
+  getPlacementLines,
   applyGameProgress,
   claimMission,
   buySkin,
@@ -23,8 +25,10 @@ import {
   removeCell,
   clearArea,
   openChest,
+  normalizeProfile,
   shouldStartBonusStage,
 } from "../src/game/gameLogic.js";
+import { getDragLift, getPlacementCell } from "../src/game/dragPlacement.js";
 
 const piece = (cells, id = "test") => ({ id, cells, colorIndex: 0, placed: false });
 const filled = { skin: "classic", colorIndex: 0 };
@@ -35,6 +39,49 @@ function fill(board, cells) {
     next[row][col] = filled;
   });
   return next;
+}
+
+{
+  const profile = createInitialProfile("2026-06-18");
+  assert.equal(profile.tutorialSeen, false, "tutorial should be shown for a new player");
+  assert.equal(
+    normalizeProfile({ ...profile, tutorialSeen: true }, "2026-06-18").tutorialSeen,
+    true,
+    "tutorial completion should persist",
+  );
+}
+
+{
+  const metrics = {
+    left: 10,
+    top: 20,
+    width: 320,
+    height: 320,
+    cellWidth: 40,
+    cellHeight: 40,
+  };
+  assert.deepEqual(
+    getPlacementCell(piece([[0, 0]]), { x: 150, y: 160 }, metrics),
+    { row: 3, col: 3 },
+    "drag target should snap to the nearest board cell",
+  );
+  assert.deepEqual(
+    getPlacementCell(piece([[0, 0], [0, 1]]), { x: 150, y: 160 }, metrics),
+    { row: 3, col: 3 },
+    "even-width pieces should use a centered nearest-cell anchor",
+  );
+  assert.deepEqual(
+    getPlacementCell(piece([[0, 0], [0, 1], [0, 2]]), { x: 12, y: 80 }, metrics),
+    { row: 1, col: 0 },
+    "edge assist should keep a piece placeable on the first column",
+  );
+  assert.equal(
+    getPlacementCell(piece([[0, 0]]), { x: -40, y: 80 }, metrics),
+    null,
+    "drag target should clear when the pointer is far outside the board",
+  );
+  assert.equal(getDragLift(30), 68, "small boards should retain finger clearance");
+  assert.equal(getDragLift(50), 88, "large boards should cap finger clearance");
 }
 
 {
@@ -53,6 +100,11 @@ function fill(board, cells) {
   const placed = placePiece(board, piece([[0, 0]]), 0, 7);
   const completed = findCompletedLines(placed);
   assert.deepEqual(completed.rows, [0], "row clear should be detected");
+  assert.deepEqual(
+    getPlacementLines(board, piece([[0, 0]]), 0, 7).rows,
+    [0],
+    "placement preview should match the resulting row clear",
+  );
   assert.equal(clearCompletedLines(placed, completed).board[0].every((cell) => cell === null), true);
 }
 
@@ -103,6 +155,16 @@ function fill(board, cells) {
     advanceBonusStage(advanceBonusStage({ active: true, movesLeft: 5, misses: 0 }, 0), 0).active,
     false,
     "bonus stage should end after two non-clear moves",
+  );
+  assert.deepEqual(
+    advanceComboState(2, 2, 0),
+    { combo: 0, misses: 0 },
+    "combo should expire after the third non-clear placement",
+  );
+  assert.deepEqual(
+    advanceComboState(2, 2, 1),
+    { combo: 3, misses: 0 },
+    "a clear should extend the combo and reset misses",
   );
   assert.equal(bonusizePieces([piece([[0, 0], [0, 1]])])[0].solid, true, "bonus pieces should use one color");
 

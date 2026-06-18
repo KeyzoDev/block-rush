@@ -6,6 +6,7 @@ import {
   Coins,
   Gift,
   Hammer,
+  Hand,
   Home,
   Lock,
   Mic2,
@@ -29,11 +30,13 @@ import {
   BOARD_SIZE,
   BONUS_STAGE,
   CHEST_MAX,
+  COMBO_MISS_LIMIT,
   MISSION_DEFS,
   POWERUPS,
   SKINS,
   STORAGE_KEYS,
   advanceBonusStage,
+  advanceComboState,
   applyGameProgress,
   bonusizePieces,
   buyPowerup,
@@ -43,13 +46,13 @@ import {
   claimMission,
   clearArea,
   clearCompletedLines,
-  comboLabel,
   createInitialProfile,
   createRun,
   findCompletedLines,
   generateHand,
   getPieceBounds,
   getPieceColorIndex,
+  getPlacementLines,
   getPlacementReward,
   getSkin,
   levelThreshold,
@@ -63,8 +66,14 @@ import {
   shouldStartBonusStage,
   spendPowerup,
 } from "./game/gameLogic.js";
+import {
+  getBoardGridMetrics,
+  getDragLift,
+  getPlacementCell,
+} from "./game/dragPlacement.js";
 
 let audioContext;
+let audioMaster;
 let musicNodes;
 
 function readJson(key) {
@@ -85,63 +94,197 @@ function saveJson(key, value) {
 }
 
 function getPointCell(boardElement, piece, point) {
-  if (!boardElement || !piece) return null;
-  const rect = boardElement.getBoundingClientRect();
-  const cell = rect.width / BOARD_SIZE;
-  const bounds = getPieceBounds(piece);
-  const row = Math.floor((point.y - rect.top) / cell - bounds.height / 2);
-  const col = Math.floor((point.x - rect.left) / cell - bounds.width / 2);
-  return { row, col };
+  return getPlacementCell(piece, point, getBoardGridMetrics(boardElement));
 }
 
-function playSound(kind, enabled) {
+function getBoardCellSize(boardElement) {
+  const metrics = getBoardGridMetrics(boardElement);
+  return metrics ? Math.min(metrics.cellWidth, metrics.cellHeight) : 44;
+}
+
+function getAudioSystem() {
+  const AudioCtor = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtor) return null;
+  audioContext ||= new AudioCtor();
+  if (audioContext.state === "suspended") audioContext.resume();
+  if (!audioMaster) {
+    const compressor = audioContext.createDynamicsCompressor();
+    const gain = audioContext.createGain();
+    compressor.threshold.value = -16;
+    compressor.knee.value = 14;
+    compressor.ratio.value = 5;
+    compressor.attack.value = 0.004;
+    compressor.release.value = 0.18;
+    gain.gain.value = 0.72;
+    compressor.connect(gain);
+    gain.connect(audioContext.destination);
+    audioMaster = compressor;
+  }
+  return { context: audioContext, output: audioMaster };
+}
+
+function scheduleTone(context, output, {
+  frequency,
+  endFrequency = frequency,
+  start,
+  duration,
+  volume,
+  type = "sine",
+}) {
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  oscillator.type = type;
+  oscillator.frequency.setValueAtTime(frequency, start);
+  oscillator.frequency.exponentialRampToValueAtTime(Math.max(24, endFrequency), start + duration);
+  gain.gain.setValueAtTime(0.001, start);
+  gain.gain.exponentialRampToValueAtTime(volume, start + Math.min(0.012, duration * 0.25));
+  gain.gain.exponentialRampToValueAtTime(0.001, start + duration);
+  oscillator.connect(gain);
+  gain.connect(output);
+  oscillator.start(start);
+  oscillator.stop(start + duration + 0.03);
+}
+
+function scheduleNoise(context, output, {
+  start,
+  duration,
+  volume,
+  frequency = 1800,
+}) {
+  const frameCount = Math.max(1, Math.floor(context.sampleRate * duration));
+  const buffer = context.createBuffer(1, frameCount, context.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let index = 0; index < frameCount; index += 1) {
+    data[index] = (Math.random() * 2 - 1) * (1 - index / frameCount);
+  }
+  const source = context.createBufferSource();
+  const filter = context.createBiquadFilter();
+  const gain = context.createGain();
+  filter.type = "bandpass";
+  filter.frequency.value = frequency;
+  filter.Q.value = 0.7;
+  gain.gain.setValueAtTime(volume, start);
+  gain.gain.exponentialRampToValueAtTime(0.001, start + duration);
+  source.buffer = buffer;
+  source.connect(filter);
+  filter.connect(gain);
+  gain.connect(output);
+  source.start(start);
+}
+
+function playSound(kind, enabled, detail = {}) {
   if (!enabled || typeof window === "undefined") return;
   try {
-    const AudioCtor = window.AudioContext || window.webkitAudioContext;
-    if (!AudioCtor) return;
-    audioContext ||= new AudioCtor();
-    if (audioContext.state === "suspended") audioContext.resume();
-    const now = audioContext.currentTime;
-    const map = {
-      place: [[430, 560], 0.045, "triangle", 0.07],
-      clear: [[620, 850, 1120], 0.11, "sine", 0.08],
-      bigClear: [[240, 520, 920, 1380], 0.2, "triangle", 0.09],
-      combo: [[520, 760, 1040, 1480], 0.18, "sine", 0.1],
-      bad: [140, 0.06],
-      reward: [[640, 820, 1040], 0.16, "sine", 0.08],
-    };
-    const config = map[kind] || map.place;
-    if (kind === "bad") {
-      const osc = audioContext.createOscillator();
-      const gain = audioContext.createGain();
-      osc.type = "sawtooth";
-      osc.frequency.setValueAtTime(config[0], now);
-      osc.frequency.exponentialRampToValueAtTime(80, now + config[1]);
-      gain.gain.setValueAtTime(0.001, now);
-      gain.gain.exponentialRampToValueAtTime(0.06, now + 0.01);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + config[1]);
-      osc.connect(gain);
-      gain.connect(audioContext.destination);
-      osc.start(now);
-      osc.stop(now + config[1] + 0.02);
+    const system = getAudioSystem();
+    if (!system) return;
+    const { context, output } = system;
+    const now = context.currentTime + 0.004;
+
+    if (kind === "place") {
+      scheduleTone(context, output, {
+        frequency: 310,
+        endFrequency: 185,
+        start: now,
+        duration: 0.055,
+        volume: 0.045,
+        type: "triangle",
+      });
+      scheduleTone(context, output, {
+        frequency: 880,
+        endFrequency: 520,
+        start: now,
+        duration: 0.025,
+        volume: 0.016,
+        type: "square",
+      });
       return;
     }
 
-    const [notes, length, type, volume] = config;
-    notes.forEach((freq, index) => {
-      const osc = audioContext.createOscillator();
-      const gain = audioContext.createGain();
-      const start = now + index * Math.min(0.045, length / notes.length);
-      osc.type = type;
-      osc.frequency.setValueAtTime(freq, start);
-      osc.frequency.exponentialRampToValueAtTime(freq * 1.18, start + length);
-      gain.gain.setValueAtTime(0.001, start);
-      gain.gain.exponentialRampToValueAtTime(volume, start + 0.012);
-      gain.gain.exponentialRampToValueAtTime(0.001, start + length);
-      osc.connect(gain);
-      gain.connect(audioContext.destination);
-      osc.start(start);
-      osc.stop(start + length + 0.03);
+    if (kind === "bad") {
+      scheduleTone(context, output, {
+        frequency: 155,
+        endFrequency: 82,
+        start: now,
+        duration: 0.085,
+        volume: 0.05,
+        type: "sawtooth",
+      });
+      return;
+    }
+
+    if (kind === "gameOver") {
+      [330, 247, 196].forEach((frequency, index) => {
+        scheduleTone(context, output, {
+          frequency,
+          endFrequency: frequency * 0.82,
+          start: now + index * 0.105,
+          duration: 0.22,
+          volume: 0.04,
+          type: "triangle",
+        });
+      });
+      return;
+    }
+
+    if (kind === "reward") {
+      [660, 880, 1320].forEach((frequency, index) => {
+        scheduleTone(context, output, {
+          frequency,
+          endFrequency: frequency * 1.08,
+          start: now + index * 0.055,
+          duration: 0.16,
+          volume: 0.045,
+          type: "sine",
+        });
+      });
+      scheduleNoise(context, output, { start: now, duration: 0.1, volume: 0.018, frequency: 3600 });
+      return;
+    }
+
+    if (kind === "praise") {
+      [880, 1174.66, 1567.98].forEach((frequency, index) => {
+        scheduleTone(context, output, {
+          frequency,
+          endFrequency: frequency * 1.06,
+          start: now + index * 0.038,
+          duration: 0.24,
+          volume: 0.032,
+          type: "sine",
+        });
+      });
+      return;
+    }
+
+    const lines = Math.max(1, detail.lines || 1);
+    const combo = Math.max(1, detail.combo || 1);
+    const big = kind === "bigClear" || lines > 1 || combo >= 3;
+    const root = 440 * 2 ** (Math.min(5, combo - 1) / 12);
+    const notes = big ? [1, 1.25, 1.5, 2] : [1, 1.25, 1.5];
+    scheduleNoise(context, output, {
+      start: now,
+      duration: big ? 0.17 : 0.11,
+      volume: big ? 0.045 : 0.027,
+      frequency: big ? 2200 : 3000,
+    });
+    if (big) {
+      scheduleTone(context, output, {
+        frequency: 135,
+        endFrequency: 62,
+        start: now,
+        duration: 0.22,
+        volume: 0.07,
+        type: "triangle",
+      });
+    }
+    notes.forEach((ratio, index) => {
+      scheduleTone(context, output, {
+        frequency: root * ratio,
+        endFrequency: root * ratio * 1.06,
+        start: now + index * 0.04,
+        duration: big ? 0.24 : 0.16,
+        volume: big ? 0.06 : 0.043,
+        type: index % 2 ? "triangle" : "sine",
+      });
     });
   } catch {
     // Audio feedback is optional.
@@ -155,50 +298,47 @@ function setMusic(enabled) {
       if (musicNodes) {
         musicNodes.gain.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.18);
         window.setTimeout(() => {
-          musicNodes?.oscA.stop();
-          musicNodes?.oscB.stop();
+          musicNodes?.nodes.forEach((node) => node.stop?.());
           musicNodes = null;
         }, 220);
       }
       return;
     }
 
-    const AudioCtor = window.AudioContext || window.webkitAudioContext;
-    if (!AudioCtor || musicNodes) return;
-    audioContext ||= new AudioCtor();
-    if (audioContext.state === "suspended") audioContext.resume();
-    const now = audioContext.currentTime;
-    const gain = audioContext.createGain();
-    const oscA = audioContext.createOscillator();
-    const oscB = audioContext.createOscillator();
+    if (musicNodes) return;
+    const system = getAudioSystem();
+    if (!system) return;
+    const { context, output } = system;
+    const now = context.currentTime;
+    const gain = context.createGain();
+    const filter = context.createBiquadFilter();
+    const oscA = context.createOscillator();
+    const oscB = context.createOscillator();
+    const lfo = context.createOscillator();
+    const lfoGain = context.createGain();
     oscA.type = "sine";
-    oscB.type = "triangle";
-    oscA.frequency.setValueAtTime(146.83, now);
-    oscB.frequency.setValueAtTime(220, now);
+    oscB.type = "sine";
+    oscA.frequency.setValueAtTime(110, now);
+    oscB.frequency.setValueAtTime(164.81, now);
+    lfo.frequency.value = 0.12;
+    lfoGain.gain.value = 0.006;
+    filter.type = "lowpass";
+    filter.frequency.value = 520;
+    filter.Q.value = 0.8;
     gain.gain.setValueAtTime(0.001, now);
-    gain.gain.exponentialRampToValueAtTime(0.018, now + 0.3);
-    oscA.connect(gain);
-    oscB.connect(gain);
-    gain.connect(audioContext.destination);
+    gain.gain.exponentialRampToValueAtTime(0.012, now + 0.4);
+    lfo.connect(lfoGain);
+    lfoGain.connect(gain.gain);
+    oscA.connect(filter);
+    oscB.connect(filter);
+    filter.connect(gain);
+    gain.connect(output);
     oscA.start();
     oscB.start();
-    musicNodes = { gain, oscA, oscB };
+    lfo.start();
+    musicNodes = { gain, nodes: [oscA, oscB, lfo] };
   } catch {
     musicNodes = null;
-  }
-}
-
-function speakPraise(text, enabled) {
-  if (!enabled || typeof window === "undefined" || !window.speechSynthesis || !text) return;
-  try {
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text.toLowerCase());
-    utterance.rate = 1.02;
-    utterance.pitch = 1.28;
-    utterance.volume = 0.42;
-    window.speechSynthesis.speak(utterance);
-  } catch {
-    // Voice feedback is optional.
   }
 }
 
@@ -208,12 +348,39 @@ function haptic(enabled, pattern = 18) {
 
 function praiseLabel(lineCount, combo) {
   if (combo >= 5) return "UNBELIEVABLE";
-  if (lineCount >= 4) return "AMAZING";
-  if (combo >= 4 || lineCount >= 3) return "EXCELLENT";
-  if (combo >= 3 || lineCount >= 2) return "AWESOME";
-  if (combo >= 2) return "GREAT";
-  if (lineCount >= 1) return "GOOD";
+  if (combo >= 4 || lineCount >= 4) return "EXCELLENT";
+  if (combo >= 3 || lineCount >= 3) return "AMAZING";
+  if (combo >= 2 || lineCount >= 2) return "GREAT";
   return "";
+}
+
+function AnimatedScore({ value }) {
+  const [displayValue, setDisplayValue] = useState(value);
+  const previousValue = useRef(value);
+
+  useEffect(() => {
+    const from = previousValue.current;
+    const delta = value - from;
+    previousValue.current = value;
+    if (delta <= 0) {
+      setDisplayValue(value);
+      return undefined;
+    }
+
+    const duration = Math.min(520, 220 + Math.log10(delta + 1) * 90);
+    const startedAt = performance.now();
+    let frame;
+    const update = (now) => {
+      const progress = Math.min(1, (now - startedAt) / duration);
+      const eased = 1 - (1 - progress) ** 3;
+      setDisplayValue(Math.round(from + delta * eased));
+      if (progress < 1) frame = window.requestAnimationFrame(update);
+    };
+    frame = window.requestAnimationFrame(update);
+    return () => window.cancelAnimationFrame(frame);
+  }, [value]);
+
+  return <h1>{displayValue.toLocaleString()}</h1>;
 }
 
 function syncPiecesWithBonus(pieces, bonus) {
@@ -245,7 +412,14 @@ function ProgressBar({ value, max, label }) {
 }
 
 function PiecePreview({ piece, skinId, compact = false }) {
-  if (!piece || piece.placed) return <div className="empty-piece">Ready</div>;
+  if (!piece || piece.placed) {
+    return (
+      <div className="empty-piece">
+        <Check size={14} aria-hidden="true" />
+        <span>Placed</span>
+      </div>
+    );
+  }
   const bounds = getPieceBounds(piece);
   const cells = normalizeCells(piece.cells);
   const skin = getSkin(skinId);
@@ -302,12 +476,25 @@ function IconButton({ icon: Icon, label, onClick, disabled = false, tone = "plai
   );
 }
 
-function Board({ board, boardRef, skinId, hover, clearMarks, activePower, onCellAction }) {
+function Board({
+  board,
+  boardRef,
+  skinId,
+  hover,
+  previewCompleted,
+  clearMarks,
+  landingMarks,
+  activePower,
+  onCellAction,
+}) {
   const selectedSkin = getSkin(skinId);
-  const previewCells = new Set();
+  const previewCells = new Map();
   if (hover?.piece) {
-    hover.piece.cells.forEach(([pieceRow, pieceCol]) => {
-      previewCells.add(`${hover.row + pieceRow}-${hover.col + pieceCol}`);
+    hover.piece.cells.forEach(([pieceRow, pieceCol], index) => {
+      previewCells.set(
+        `${hover.row + pieceRow}-${hover.col + pieceCol}`,
+        getPieceColorIndex(hover.piece, index),
+      );
     });
   }
   const clearCells = new Map(
@@ -318,21 +505,33 @@ function Board({ board, boardRef, skinId, hover, clearMarks, activePower, onCell
       return [`${row}-${col}`, delay || 0];
     }),
   );
+  const landedCells = new Map(
+    landingMarks.map((mark) => [`${mark.row}-${mark.col}`, mark.delay || 0]),
+  );
+  const previewRows = new Set(previewCompleted?.rows || []);
+  const previewCols = new Set(previewCompleted?.cols || []);
 
   return (
     <div
       ref={boardRef}
-      className={`board ${activePower ? "targeting" : ""}`}
+      className={`board ${activePower ? "targeting" : ""} ${previewCompleted?.count ? "clear-ready" : ""}`}
       style={{ "--board-bg": selectedSkin.board }}
     >
       {board.map((row, rowIndex) =>
         row.map((cell, colIndex) => {
           const key = `${rowIndex}-${colIndex}`;
-          const preview = previewCells.has(key);
+          const previewColorIndex = previewCells.get(key);
+          const preview = previewColorIndex !== undefined;
           const clearDelay = clearCells.get(key);
           const clearing = clearDelay !== undefined;
+          const landDelay = landedCells.get(key);
+          const landed = landDelay !== undefined;
+          const lineReady = previewRows.has(rowIndex) || previewCols.has(colIndex);
           const cellSkin = cell ? getSkin(cell.skin) : selectedSkin;
           const color = cell ? cellSkin.swatches[cell.colorIndex % cellSkin.swatches.length] : undefined;
+          const previewColor = preview
+            ? selectedSkin.swatches[previewColorIndex % selectedSkin.swatches.length]
+            : undefined;
           return (
             <button
               type="button"
@@ -342,14 +541,21 @@ function Board({ board, boardRef, skinId, hover, clearMarks, activePower, onCell
                 preview ? "preview" : "",
                 preview && hover?.valid ? "valid" : "",
                 preview && !hover?.valid ? "invalid" : "",
+                lineReady ? "line-ready" : "",
                 clearing ? "clearing" : "",
+                landed ? "landed" : "",
                 activePower ? "tool-target" : "",
               ].join(" ")}
               key={key}
               style={{
-                ...(color ? { background: color } : {}),
+                ...(color && !preview ? { background: color } : {}),
+                ...(previewColor ? { "--preview-color": previewColor } : {}),
                 ...(clearing ? { "--clear-delay": `${clearDelay}ms` } : {}),
+                ...(landed ? { "--land-delay": `${landDelay}ms` } : {}),
               }}
+              data-row={rowIndex}
+              data-col={colIndex}
+              data-preview={preview ? (hover?.valid ? "valid" : "invalid") : undefined}
               onPointerDown={(event) => {
                 if (!activePower) return;
                 event.preventDefault();
@@ -370,6 +576,7 @@ function GameScreen({
   boardRef,
   hover,
   clearMarks,
+  landingMarks,
   particles,
   lastReward,
   praise,
@@ -380,8 +587,17 @@ function GameScreen({
   onCellAction,
   onPause,
   onOpenSettings,
+  tutorialActive,
 }) {
   const skin = getSkin(profile.selectedSkin);
+  const xpMax = levelThreshold(profile.level);
+  const xpPercent = Math.min(100, (profile.xp / xpMax) * 100);
+  const chestPercent = Math.min(100, (profile.chestProgress / CHEST_MAX) * 100);
+  const placedCount = run.pieces.filter((piece) => piece.placed).length;
+  const previewCompleted = hover?.valid
+    ? getPlacementLines(run.board, hover.piece, hover.row, hover.col, profile.selectedSkin)
+    : { rows: [], cols: [], count: 0 };
+
   return (
     <main className="game-screen">
       <header className="top-bar">
@@ -391,7 +607,8 @@ function GameScreen({
         </div>
         <div className="score-block">
           <span>Score</span>
-          <h1>{run.score.toLocaleString()}</h1>
+          <span className="score-aura" aria-hidden="true" />
+          <AnimatedScore value={run.score} />
         </div>
         <div className="top-actions">
           <button className="round-button" type="button" onClick={onPause} title="Pause">
@@ -403,29 +620,64 @@ function GameScreen({
         </div>
       </header>
 
+      <section className="run-progress" aria-label="Run progress">
+        <div className="run-progress-item">
+          <Star size={13} aria-hidden="true" />
+          <span>Lv {profile.level}</span>
+          <div className="micro-track" aria-hidden="true">
+            <i style={{ width: `${xpPercent}%` }} />
+          </div>
+        </div>
+        <div className={`run-progress-item ${profile.chestProgress >= CHEST_MAX ? "ready" : ""}`}>
+          <Gift size={13} aria-hidden="true" />
+          <span>Chest {profile.chestProgress}/{CHEST_MAX}</span>
+          <div className="micro-track" aria-hidden="true">
+            <i style={{ width: `${chestPercent}%` }} />
+          </div>
+        </div>
+      </section>
+
+      {(run.combo > 0 || run.bonus?.active) && (
+        <section className="run-status" aria-label="Active bonuses">
+          {run.combo > 0 && (
+            <div className="combo-meter" aria-live="polite">
+              <span>Chain</span>
+              <strong>x{run.combo}</strong>
+              <div className="combo-life" aria-label={`${COMBO_MISS_LIMIT - run.comboMisses} chain saves left`}>
+                {Array.from({ length: COMBO_MISS_LIMIT }, (_, index) => (
+                  <i className={index < COMBO_MISS_LIMIT - run.comboMisses ? "active" : ""} key={index} />
+                ))}
+              </div>
+            </div>
+          )}
+          {run.bonus?.active && (
+            <div className="rush-meter" aria-live="polite">
+              <Zap size={13} aria-hidden="true" />
+              <span>Rush x{BONUS_STAGE.scoreMultiplier}</span>
+              <strong>{run.bonus.movesLeft}</strong>
+            </div>
+          )}
+        </section>
+      )}
+
       <div className="board-wrap">
-        {run.combo > 0 && (
-          <div className="combo-meter" aria-live="polite">
-            <span>Combo</span>
-            <strong>x{run.combo}</strong>
-          </div>
-        )}
-        {run.bonus?.active && (
-          <div className="rush-meter" aria-live="polite">
-            <Zap size={15} aria-hidden="true" />
-            <span>Rush x{BONUS_STAGE.scoreMultiplier}</span>
-            <strong>{run.bonus.movesLeft}</strong>
-          </div>
-        )}
         <Board
           board={run.board}
           boardRef={boardRef}
           skinId={profile.selectedSkin}
           hover={hover}
+          previewCompleted={previewCompleted}
           clearMarks={clearMarks}
+          landingMarks={landingMarks}
           activePower={activePower}
           onCellAction={onCellAction}
         />
+        {previewCompleted.count > 0 && (
+          <div className="clear-preview-cue" aria-live="polite">
+            <Zap size={13} aria-hidden="true" />
+            Clear {previewCompleted.count}
+          </div>
+        )}
         <div className="particles" aria-hidden="true">
           {particles.map((particle) => (
             <i
@@ -442,7 +694,11 @@ function GameScreen({
           ))}
         </div>
         {lastReward && (
-          <div className="reward-burst" aria-live="polite">
+          <div
+            className="reward-burst"
+            style={{ left: `${lastReward.left}%`, top: `${lastReward.top}%` }}
+            aria-live="polite"
+          >
             <strong>+{lastReward.score}</strong>
             <span>
               {lastReward.lines > 0 ? `${lastReward.lines} line${lastReward.lines > 1 ? "s" : ""}` : "Nice move"}
@@ -451,19 +707,30 @@ function GameScreen({
         )}
       </div>
 
-      <section className="piece-tray" aria-label="Available pieces">
-        {run.pieces.map((piece) => (
-          <button
-            className={`piece-slot ${piece.placed ? "placed" : ""}`}
-            type="button"
-            key={piece.id}
-            onPointerDown={(event) => onBeginDrag(event, piece)}
-            disabled={piece.placed || run.isOver}
-            aria-label={piece.placed ? "Placed piece" : `Drag ${piece.name}`}
-          >
-            <PiecePreview piece={piece} skinId={profile.selectedSkin} />
-          </button>
-        ))}
+      <section className="piece-zone" aria-label="Available pieces">
+        <div className="hand-status">
+          <span>Place all 3</span>
+          <div className="hand-pips" aria-hidden="true">
+            {run.pieces.map((piece) => (
+              <i className={piece.placed ? "done" : ""} key={piece.id} />
+            ))}
+          </div>
+          <strong>{3 - placedCount} left</strong>
+        </div>
+        <div className="piece-tray">
+          {run.pieces.map((piece) => (
+            <button
+              className={`piece-slot ${piece.placed ? "placed" : ""}`}
+              type="button"
+              key={piece.id}
+              onPointerDown={(event) => onBeginDrag(event, piece)}
+              disabled={piece.placed || run.isOver}
+              aria-label={piece.placed ? "Placed piece" : `Drag ${piece.name}`}
+            >
+              <PiecePreview piece={piece} skinId={profile.selectedSkin} />
+            </button>
+          ))}
+        </div>
       </section>
 
       <section className="power-row compact-tools" aria-label="Power-ups">
@@ -471,23 +738,30 @@ function GameScreen({
           className={`power-button ${activePower === "hammer" ? "active" : ""}`}
           type="button"
           onClick={() => onSelectPowerup("hammer")}
+          aria-label={`Hammer, ${profile.powerups.hammer || 0} left`}
+          title="Hammer"
         >
           <Hammer size={18} aria-hidden="true" />
-          <span>Hammer</span>
           <strong>{profile.powerups.hammer || 0}</strong>
         </button>
-        <button className="power-button" type="button" onClick={() => onSelectPowerup("shuffle")}>
+        <button
+          className="power-button"
+          type="button"
+          onClick={() => onSelectPowerup("shuffle")}
+          aria-label={`Shuffle, ${profile.powerups.shuffle || 0} left`}
+          title="Shuffle"
+        >
           <Shuffle size={18} aria-hidden="true" />
-          <span>Shuffle</span>
           <strong>{profile.powerups.shuffle || 0}</strong>
         </button>
         <button
           className={`power-button ${activePower === "bomb" ? "active" : ""}`}
           type="button"
           onClick={() => onSelectPowerup("bomb")}
+          aria-label={`Bomb, ${profile.powerups.bomb || 0} left`}
+          title="Bomb"
         >
           <Bomb size={18} aria-hidden="true" />
-          <span>Bomb</span>
           <strong>{profile.powerups.bomb || 0}</strong>
         </button>
       </section>
@@ -499,11 +773,28 @@ function GameScreen({
       )}
 
       {drag && (
-        <div className="drag-ghost" style={{ transform: `translate(${drag.x}px, ${drag.y}px)` }} aria-hidden="true">
+        <div
+          className="drag-ghost"
+          style={{
+            "--drag-x": `${drag.x}px`,
+            "--drag-y": `${drag.y - drag.lift}px`,
+            "--drag-cell": `${drag.cellSize}px`,
+          }}
+          aria-hidden="true"
+        >
           <PiecePreview piece={drag.piece} skinId={profile.selectedSkin} compact />
         </div>
       )}
-      {praise && <PraiseFlash label={praise} />}
+      {tutorialActive && (
+        <div className="play-coach" role="status" aria-live="polite">
+          <Hand size={24} aria-hidden="true" />
+          <div>
+            <strong>Drag a block onto the board</strong>
+            <span>Complete a row or column to clear it</span>
+          </div>
+        </div>
+      )}
+      {praise && <PraiseFlash label={praise.label} combo={praise.combo} />}
     </main>
   );
 }
@@ -682,7 +973,7 @@ function SettingsScreen({ profile, onBack, onToggleSetting, onResetProgress, con
         </button>
         <button className="setting-row" type="button" onClick={() => onToggleSetting("voice")}>
           <Mic2 size={20} aria-hidden="true" />
-          <span>Voice</span>
+          <span>Announcer FX</span>
           <strong>{profile.settings.voice ? "On" : "Off"}</strong>
         </button>
         <button className="setting-row" type="button" onClick={() => onToggleSetting("music")}>
@@ -830,12 +1121,7 @@ function Toast({ toast }) {
   return <div className="toast">{toast}</div>;
 }
 
-function ComboFlash({ label }) {
-  if (!label) return null;
-  return <div className="combo-flash">{label}</div>;
-}
-
-function PraiseFlash({ label }) {
+function PraiseFlash({ label, combo }) {
   if (!label) return null;
   const letters = [...label];
   const sparks = Array.from({ length: 18 }, (_, index) => ({
@@ -887,6 +1173,7 @@ function PraiseFlash({ label }) {
       ))}
       <div className="praise-art">
         <span className="praise-sweep" aria-hidden="true" />
+        <span className="praise-kicker">{combo >= 2 ? `Combo x${combo}` : "Multi clear"}</span>
         <span className="praise-text" aria-label={label}>
           {letters.map((letter, index) => (
             <span
@@ -918,10 +1205,10 @@ function App() {
   const [hover, setHover] = useState(null);
   const [activePower, setActivePower] = useState(null);
   const [clearMarks, setClearMarks] = useState([]);
+  const [landingMarks, setLandingMarks] = useState([]);
   const [particles, setParticles] = useState([]);
   const [toast, setToast] = useState("");
-  const [comboFlash, setComboFlash] = useState("");
-  const [praiseFlash, setPraiseFlash] = useState("");
+  const [praiseFlash, setPraiseFlash] = useState(null);
   const [levelFlash, setLevelFlash] = useState(0);
   const [lastReward, setLastReward] = useState(null);
   const [chestState, setChestState] = useState(null);
@@ -934,6 +1221,11 @@ function App() {
   const toastTimer = useRef(null);
   const rewardTimer = useRef(null);
   const praiseTimer = useRef(null);
+  const gameOverTimer = useRef(null);
+  const landingTimer = useRef(null);
+  const hoverRef = useRef(null);
+  const dragFrame = useRef(null);
+  const pendingPointer = useRef(null);
   const audioUnlockedRef = useRef(false);
 
   const selectedSkin = useMemo(() => getSkin(profile.selectedSkin), [profile.selectedSkin]);
@@ -964,37 +1256,35 @@ function App() {
   }
 
   function showReward(reward) {
-    setLastReward(reward);
+    setLastReward({ left: 50, top: 50, ...reward });
     window.clearTimeout(rewardTimer.current);
-    rewardTimer.current = window.setTimeout(() => setLastReward(null), 900);
+    rewardTimer.current = window.setTimeout(() => setLastReward(null), 820);
   }
 
-  function addParticles(amount) {
+  function addParticles(amount, origins = [[3.5, 3.5]]) {
     const nextParticles = Array.from({ length: amount }, (_, index) => ({
       id: `${Date.now()}-${index}`,
-      left: 30 + Math.random() * 40,
-      top: 28 + Math.random() * 36,
-      dx: -90 + Math.random() * 180,
-      dy: -120 + Math.random() * 110,
-      color: index % selectedSkin.swatches.length,
+      ...(() => {
+        const [row, col] = origins[index % origins.length];
+        return {
+          left: ((col + 0.5) / BOARD_SIZE) * 100 + (Math.random() - 0.5) * 4,
+          top: ((row + 0.5) / BOARD_SIZE) * 100 + (Math.random() - 0.5) * 4,
+          dx: -78 + Math.random() * 156,
+          dy: -105 + Math.random() * 90,
+          color: index % selectedSkin.swatches.length,
+        };
+      })(),
     }));
     setParticles(nextParticles);
     window.setTimeout(() => setParticles([]), 760);
   }
 
-  function flashCombo(combo) {
-    const label = comboLabel(combo);
+  function flashPraise(label, combo) {
     if (!label) return;
-    setComboFlash(label);
-    window.setTimeout(() => setComboFlash(""), 850);
-  }
-
-  function flashPraise(label) {
-    if (!label) return;
-    setPraiseFlash(label);
+    setPraiseFlash({ label, combo });
     window.clearTimeout(praiseTimer.current);
-    praiseTimer.current = window.setTimeout(() => setPraiseFlash(""), 1050);
-    speakPraise(label, profile.settings.voice && audioUnlockedRef.current);
+    praiseTimer.current = window.setTimeout(() => setPraiseFlash(null), 1180);
+    playSound("praise", profile.settings.voice && audioUnlockedRef.current);
   }
 
   function triggerShake(strong = false) {
@@ -1010,8 +1300,9 @@ function App() {
     const finalRun = { ...baseRun, board: boardAfterClear, pieces: nextPieces, isOver };
     setRun(finalRun);
     if (isOver) {
-      playSound("bad", profile.settings.sound);
-      setScreen("gameover");
+      playSound("gameOver", profile.settings.sound);
+      window.clearTimeout(gameOverTimer.current);
+      gameOverTimer.current = window.setTimeout(() => setScreen("gameover"), 520);
     }
     return finalRun;
   }
@@ -1028,6 +1319,20 @@ function App() {
     }
 
     const placedBoard = placePiece(run.board, piece, row, col, profile.selectedSkin);
+    const pieceBounds = getPieceBounds(piece);
+    const placementCenter = {
+      left: ((col + pieceBounds.width / 2) / BOARD_SIZE) * 100,
+      top: ((row + pieceBounds.height / 2) / BOARD_SIZE) * 100,
+    };
+    setLandingMarks(
+      piece.cells.map(([cellRow, cellCol], index) => ({
+        row: row + cellRow,
+        col: col + cellCol,
+        delay: index * 28,
+      })),
+    );
+    window.clearTimeout(landingTimer.current);
+    landingTimer.current = window.setTimeout(() => setLandingMarks([]), 460);
     const completed = findCompletedLines(placedBoard);
     const bonusBeforeMove = run.bonus || { active: false, movesLeft: 0, misses: 0 };
     const reward = getPlacementReward(piece.cells.length, completed.count, run.combo, {
@@ -1035,8 +1340,8 @@ function App() {
     });
     const score = run.score + reward.score;
     const totalLines = run.totalLines + completed.count;
-    const nextComboMisses = completed.count > 0 ? 0 : (run.comboMisses || 0) + 1;
-    const comboAfterMove = completed.count > 0 ? reward.nextCombo : nextComboMisses >= 3 ? 0 : run.combo;
+    const comboState = advanceComboState(run.combo, run.comboMisses || 0, completed.count);
+    const comboAfterMove = comboState.combo;
     const bonusTriggered = shouldStartBonusStage({
       previousLines: run.totalLines,
       nextLines: totalLines,
@@ -1065,7 +1370,7 @@ function App() {
       pieces: piecesAfterPlacement,
       score,
       combo: comboAfterMove,
-      comboMisses: comboAfterMove > 0 ? nextComboMisses : 0,
+      comboMisses: comboState.misses,
       bonus: bonusAfterMove,
       totalLines,
       coinsEarned: (run.coinsEarned || 0) + Math.max(0, progress.profile.coins - profile.coins),
@@ -1096,22 +1401,38 @@ function App() {
             : "clear"
         : "place",
       profile.settings.sound,
+      { lines: completed.count, combo: comboAfterMove },
     );
-    showReward({ score: reward.score, coins: reward.coins, lines: completed.count });
     if (completed.count > 0) {
       setRun(baseRun);
       setClearing(true);
       const cleared = clearCompletedLines(placedBoard, completed);
+      const rewardCenter = cleared.clearedCells.reduce(
+        (center, [cellRow, cellCol]) => ({
+          row: center.row + cellRow / cleared.clearedCells.length,
+          col: center.col + cellCol / cleared.clearedCells.length,
+        }),
+        { row: 0, col: 0 },
+      );
       setClearMarks(
         cleared.clearedCells.map(([cellRow, cellCol]) => ({
           row: cellRow,
           col: cellCol,
-          delay: (cellRow + cellCol) * 14,
+          delay: Math.min(
+            completed.rows.includes(cellRow) ? cellCol * 18 : Number.POSITIVE_INFINITY,
+            completed.cols.includes(cellCol) ? cellRow * 18 : Number.POSITIVE_INFINITY,
+          ),
         })),
       );
-      addParticles(22 + completed.count * 16 + comboAfterMove * 7);
-      flashCombo(comboAfterMove);
-      flashPraise(praise);
+      showReward({
+        score: reward.score,
+        coins: reward.coins,
+        lines: completed.count,
+        left: ((rewardCenter.col + 0.5) / BOARD_SIZE) * 100,
+        top: ((rewardCenter.row + 0.5) / BOARD_SIZE) * 100,
+      });
+      addParticles(18 + completed.count * 12 + comboAfterMove * 5, cleared.clearedCells);
+      flashPraise(praise, comboAfterMove);
       triggerShake(completed.count > 1 || comboAfterMove >= 2);
       window.setTimeout(() => {
         setClearMarks([]);
@@ -1119,7 +1440,17 @@ function App() {
         setClearing(false);
       }, 470);
     } else {
-      addParticles(8);
+      showReward({
+        score: reward.score,
+        coins: reward.coins,
+        lines: 0,
+        ...placementCenter,
+      });
+      addParticles(Math.min(9, 4 + piece.cells.length), piece.cells.map(([cellRow, cellCol]) => [
+        row + cellRow,
+        col + cellCol,
+      ]));
+      haptic(profile.settings.haptics, 8);
       finalizeRunAfterMove(baseRun, placedBoard, piecesAfterPlacement);
     }
     return true;
@@ -1127,51 +1458,103 @@ function App() {
 
   function handleBeginDrag(event, piece) {
     unlockAudio();
-    if (piece.placed || run.isOver || clearing || paused) return;
+    if (!event.isPrimary || event.button > 0 || piece.placed || run.isOver || clearing || paused) return;
     event.preventDefault();
+    if (!profile.tutorialSeen) {
+      setProfile((current) => ({ ...current, tutorialSeen: true }));
+    }
     setActivePower(null);
-    const nextDrag = { piece, pieceId: piece.id, x: event.clientX, y: event.clientY };
+    const cellSize = getBoardCellSize(boardRef.current);
+    const lift = getDragLift(cellSize);
+    const nextDrag = {
+      piece,
+      pieceId: piece.id,
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      cellSize,
+      lift,
+    };
     setDrag(nextDrag);
-    const cell = getPointCell(boardRef.current, piece, { x: event.clientX, y: event.clientY });
+    const cell = getPointCell(boardRef.current, piece, { x: event.clientX, y: event.clientY - lift });
     if (cell) {
-      setHover({ ...cell, piece, valid: canPlacePiece(run.board, piece, cell.row, cell.col) });
+      const nextHover = { ...cell, piece, valid: canPlacePiece(run.board, piece, cell.row, cell.col) };
+      hoverRef.current = nextHover;
+      setHover(nextHover);
+    } else {
+      hoverRef.current = null;
+      setHover(null);
     }
   }
 
   useEffect(() => {
     if (!drag) return undefined;
 
+    function updatePointer(point) {
+      const liftedPoint = { x: point.x, y: point.y - drag.lift };
+      const cell = getPointCell(boardRef.current, drag.piece, liftedPoint);
+      setDrag((current) => (current ? { ...current, x: point.x, y: point.y } : current));
+      const nextHover = cell
+        ? { ...cell, piece: drag.piece, valid: canPlacePiece(run.board, drag.piece, cell.row, cell.col) }
+        : null;
+      hoverRef.current = nextHover;
+      setHover(nextHover);
+    }
+
     function onMove(event) {
+      if (event.pointerId !== drag.pointerId) return;
       event.preventDefault();
-      const cell = getPointCell(boardRef.current, drag.piece, { x: event.clientX, y: event.clientY });
-      setDrag((current) => (current ? { ...current, x: event.clientX, y: event.clientY } : current));
-      if (cell) {
-        setHover({ ...cell, piece: drag.piece, valid: canPlacePiece(run.board, drag.piece, cell.row, cell.col) });
-      } else {
-        setHover(null);
+      pendingPointer.current = { x: event.clientX, y: event.clientY };
+      if (!dragFrame.current) {
+        dragFrame.current = window.requestAnimationFrame(() => {
+          dragFrame.current = null;
+          if (pendingPointer.current) updatePointer(pendingPointer.current);
+        });
       }
     }
 
-    function onUp() {
-      if (hover) handlePlacePiece(drag.pieceId, hover.row, hover.col);
-      else notify("Drop on the board");
+    function finishDrag(shouldPlace) {
+      if (dragFrame.current) window.cancelAnimationFrame(dragFrame.current);
+      dragFrame.current = null;
+      pendingPointer.current = null;
+      const target = hoverRef.current;
+      if (shouldPlace && target?.valid) {
+        handlePlacePiece(drag.pieceId, target.row, target.col);
+      } else if (shouldPlace && target && !target.valid) {
+        playSound("bad", profile.settings.sound);
+        haptic(profile.settings.haptics, 10);
+      }
       setDrag(null);
       setHover(null);
+      hoverRef.current = null;
+    }
+
+    function onUp(event) {
+      if (event.pointerId !== drag.pointerId) return;
+      updatePointer({ x: event.clientX, y: event.clientY });
+      finishDrag(true);
+    }
+
+    function onCancel(event) {
+      if (event.pointerId !== drag.pointerId) return;
+      finishDrag(false);
     }
 
     window.addEventListener("pointermove", onMove, { passive: false });
-    window.addEventListener("pointerup", onUp, { once: true });
-    window.addEventListener("pointercancel", onUp, { once: true });
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
     return () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
-      window.removeEventListener("pointercancel", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      if (dragFrame.current) window.cancelAnimationFrame(dragFrame.current);
     };
-  }, [drag, hover, run.board]);
+  }, [drag?.pieceId, run.board]);
 
   function startNewGame() {
     unlockAudio();
     const nextRun = createRun();
+    window.clearTimeout(gameOverTimer.current);
     setRun(nextRun);
     setPaused(false);
     setActivePower(null);
@@ -1382,6 +1765,7 @@ function App() {
             boardRef={boardRef}
             hover={hover}
             clearMarks={clearMarks}
+            landingMarks={landingMarks}
             particles={particles}
             lastReward={lastReward}
             praise={praiseFlash}
@@ -1392,6 +1776,7 @@ function App() {
             onCellAction={handleCellAction}
             onPause={() => setPaused(true)}
             onOpenSettings={() => openSettingsScreen("game")}
+            tutorialActive={!profile.tutorialSeen && run.moves === 0}
           />
         )}
         {screen === "shop" && (
@@ -1465,7 +1850,6 @@ function App() {
       )}
       {chestState && <ChestModal state={chestState} onOpen={handleChestReward} onClose={() => setChestState(null)} />}
       <Toast toast={toast} />
-      <ComboFlash label={comboFlash} />
       <LevelFlash level={levelFlash} />
     </div>
   );

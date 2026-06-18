@@ -1,5 +1,6 @@
 export const BOARD_SIZE = 8;
 export const CHEST_MAX = 8;
+export const COMBO_MISS_LIMIT = 3;
 
 export const BONUS_STAGE = {
   scoreMultiplier: 3,
@@ -200,6 +201,16 @@ export function advanceBonusStage(bonus, lineCount) {
   return { active: true, movesLeft, misses };
 }
 
+export function advanceComboState(currentCombo, currentMisses, lineCount) {
+  if (lineCount > 0) {
+    return { combo: currentCombo + 1, misses: 0 };
+  }
+
+  if (currentCombo <= 0) return { combo: 0, misses: 0 };
+  const misses = currentMisses + 1;
+  return misses >= COMBO_MISS_LIMIT ? { combo: 0, misses: 0 } : { combo: currentCombo, misses };
+}
+
 export function createRun(rng = Math.random) {
   return {
     board: createEmptyBoard(),
@@ -263,6 +274,11 @@ export function findCompletedLines(board) {
   }
 
   return { rows, cols, count: rows.length + cols.length };
+}
+
+export function getPlacementLines(board, piece, row, col, skinId = "classic") {
+  if (!canPlacePiece(board, piece, row, col)) return { rows: [], cols: [], count: 0 };
+  return findCompletedLines(placePiece(board, piece, row, col, skinId));
 }
 
 export function clearCompletedLines(board, completed) {
@@ -347,7 +363,8 @@ export function createInitialProfile(date = todayKey()) {
     selectedSkin: "classic",
     powerups: { hammer: 3, shuffle: 2, bomb: 1 },
     daily: createDailyState(date),
-    settings: { sound: true, voice: true, music: false, haptics: true },
+    tutorialSeen: false,
+    settings: { sound: true, voice: false, music: false, haptics: true },
   };
 }
 
@@ -370,6 +387,7 @@ export function normalizeProfile(rawProfile, date = todayKey()) {
     selectedSkin,
     powerups: { ...defaults.powerups, ...(raw.powerups || {}) },
     daily,
+    tutorialSeen: Boolean(raw.tutorialSeen),
     settings: { ...defaults.settings, ...(raw.settings || {}) },
   };
 }
