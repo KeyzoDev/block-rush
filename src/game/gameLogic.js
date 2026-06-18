@@ -1,3 +1,19 @@
+import {
+  DEFAULT_SKIN_ID,
+  SKINS,
+  getSkin,
+  isSkinId,
+} from "../theme/skins.js";
+import {
+  applyProgressEvent,
+  claimDailyMission,
+  equipTheme,
+  normalizeProgress,
+  unlockTheme,
+} from "../progression/progression.js";
+
+export { SKINS, getSkin };
+
 export const BOARD_SIZE = 8;
 export const CHEST_MAX = 8;
 export const COMBO_MISS_LIMIT = 3;
@@ -16,55 +32,11 @@ export const STORAGE_KEYS = {
   run: "block-rush-run-v1",
 };
 
-export const SKINS = [
-  {
-    id: "classic",
-    name: "Classic",
-    price: 0,
-    swatches: ["#2dd4bf", "#facc15", "#fb7185", "#60a5fa"],
-    board: "#e7fffb",
-  },
-  {
-    id: "neon",
-    name: "Neon",
-    price: 220,
-    swatches: ["#00f5ff", "#fc28a8", "#baff29", "#8b5cf6"],
-    board: "#10181f",
-  },
-  {
-    id: "candy",
-    name: "Candy",
-    price: 280,
-    swatches: ["#ff8ab3", "#7dd3fc", "#f9a8d4", "#fde047"],
-    board: "#fff1f7",
-  },
-  {
-    id: "galaxy",
-    name: "Galaxy",
-    price: 360,
-    swatches: ["#38bdf8", "#a78bfa", "#f472b6", "#22c55e"],
-    board: "#15172b",
-  },
-  {
-    id: "gold",
-    name: "Gold",
-    price: 500,
-    swatches: ["#f6c453", "#ff8a3d", "#fff0a3", "#d9a118"],
-    board: "#2a2010",
-  },
-];
-
 export const POWERUPS = {
   hammer: { id: "hammer", name: "Hammer", cost: 90 },
   shuffle: { id: "shuffle", name: "Shuffle", cost: 120 },
   bomb: { id: "bomb", name: "Bomb", cost: 150 },
 };
-
-export const MISSION_DEFS = [
-  { id: "clear20", title: "Clear 20 lines", target: 20, reward: 80 },
-  { id: "score1000", title: "Reach 1000 score", target: 1000, reward: 100 },
-  { id: "combo3", title: "Make 3 combos", target: 3, reward: 120 },
-];
 
 export const PIECE_SHAPES = [
   { id: "single", name: "Dot", cells: [[0, 0]], weight: 3 },
@@ -146,7 +118,11 @@ function isCompactCategory(category) {
 }
 
 export function todayKey(date = new Date()) {
-  return date.toISOString().slice(0, 10);
+  const local = new Date(date);
+  const year = local.getFullYear();
+  const month = String(local.getMonth() + 1).padStart(2, "0");
+  const day = String(local.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 export function createEmptyBoard() {
@@ -155,10 +131,6 @@ export function createEmptyBoard() {
 
 export function cloneBoard(board) {
   return board.map((row) => row.map((cell) => (cell ? { ...cell } : null)));
-}
-
-export function getSkin(id) {
-  return SKINS.find((skin) => skin.id === id) || SKINS[0];
 }
 
 export function getPieceBounds(piece) {
@@ -744,7 +716,7 @@ export function advanceComboState(currentCombo, currentMisses, lineCount) {
   return misses >= COMBO_MISS_LIMIT ? { combo: 0, misses: 0 } : { combo: currentCombo, misses };
 }
 
-export function createRun(rng = Math.random, bestAtStart = 0) {
+export function createRun(rng = Math.random, bestAtStart = 0, progressAtStart = {}) {
   const board = createEmptyBoard();
   const pieces = generateHand(rng, Date.now(), {
     board,
@@ -767,10 +739,28 @@ export function createRun(rng = Math.random, bestAtStart = 0) {
     moves: 0,
     boardClearPity: 0,
     boardClears: 0,
+    boardClearStreak: 0,
+    bestBoardClearStreak: 0,
+    feverActivations: 0,
     recentShapeIds: pieces.map((piece) => piece.shapeId).slice(-12),
     isOver: false,
+    finalized: false,
+    resultSummary: null,
+    progressEvents: { missions: [], achievements: [] },
     startedAt: Date.now(),
     bestAtStart: Math.max(0, Number(bestAtStart) || 0),
+    themeId: progressAtStart.selectedThemeId || DEFAULT_SKIN_ID,
+    totalBoardClearsAtStart: Math.max(0, Number(progressAtStart.totalBoardClears) || 0),
+    bestBoardClearStreakAtStart: Math.max(
+      0,
+      Number(progressAtStart.bestBoardClearStreak) || 0,
+    ),
+    missionProgressAtStart: Object.fromEntries(
+      Object.entries(progressAtStart.dailyMissionProgress || {}).map(([id, state]) => [
+        id,
+        Math.max(0, Number(state?.progress) || 0),
+      ]),
+    ),
   };
 }
 
@@ -910,26 +900,14 @@ export function levelThreshold(level) {
   return 260 + level * 140;
 }
 
-export function createDailyState(date = todayKey()) {
-  return {
-    date,
-    missions: Object.fromEntries(
-      MISSION_DEFS.map((mission) => [mission.id, { progress: 0, claimed: false }]),
-    ),
-  };
-}
-
 export function createInitialProfile(date = todayKey()) {
   return {
-    highScore: 0,
-    coins: 120,
+    ...normalizeProgress({}, date),
     level: 1,
     xp: 0,
     chestProgress: 0,
-    ownedSkins: ["classic"],
-    selectedSkin: "classic",
     powerups: { hammer: 3, shuffle: 2, bomb: 1 },
-    daily: createDailyState(date),
+    tutorialCompleted: false,
     tutorialSeen: false,
     settings: { sound: true, voice: false, music: false, haptics: true },
   };
@@ -938,23 +916,17 @@ export function createInitialProfile(date = todayKey()) {
 export function normalizeProfile(rawProfile, date = todayKey()) {
   const defaults = createInitialProfile(date);
   const raw = rawProfile && typeof rawProfile === "object" ? rawProfile : {};
-  const ownedSkins = Array.isArray(raw.ownedSkins) && raw.ownedSkins.length ? raw.ownedSkins : defaults.ownedSkins;
-  const selectedSkin = ownedSkins.includes(raw.selectedSkin) ? raw.selectedSkin : "classic";
-  const daily = raw.daily?.date === date ? raw.daily : createDailyState(date);
+  const progress = normalizeProgress(raw, date);
 
   return {
     ...defaults,
-    ...raw,
-    highScore: Number(raw.highScore) || 0,
-    coins: Number.isFinite(raw.coins) ? raw.coins : defaults.coins,
+    ...progress,
     level: Math.max(1, Number(raw.level) || 1),
     xp: Math.max(0, Number(raw.xp) || 0),
     chestProgress: Math.min(CHEST_MAX, Math.max(0, Number(raw.chestProgress) || 0)),
-    ownedSkins,
-    selectedSkin,
     powerups: { ...defaults.powerups, ...(raw.powerups || {}) },
-    daily,
-    tutorialSeen: Boolean(raw.tutorialSeen),
+    tutorialCompleted: Boolean(raw.tutorialCompleted ?? raw.tutorialSeen),
+    tutorialSeen: Boolean(raw.tutorialCompleted ?? raw.tutorialSeen),
     settings: { ...defaults.settings, ...(raw.settings || {}) },
   };
 }
@@ -977,7 +949,8 @@ export function applyXP(profile, xpGain) {
       ...profile,
       level,
       xp,
-      coins: profile.coins + bonusCoins,
+      totalCoins: profile.totalCoins + bonusCoins,
+      lifetimeCoinsEarned: profile.lifetimeCoinsEarned + bonusCoins,
     },
     levelsGained,
     bonusCoins,
@@ -1003,7 +976,8 @@ export function applyLineRewards(profile, previousLines, addedLines) {
   return {
     profile: {
       ...profile,
-      coins: profile.coins + bonusCoins,
+      totalCoins: profile.totalCoins + bonusCoins,
+      lifetimeCoinsEarned: profile.lifetimeCoinsEarned + bonusCoins,
       chestProgress,
     },
     bonusCoins,
@@ -1012,32 +986,19 @@ export function applyLineRewards(profile, previousLines, addedLines) {
   };
 }
 
-export function updateDailyProgress(daily, event, date = todayKey()) {
-  const base = daily?.date === date ? daily : createDailyState(date);
-  const missions = { ...base.missions };
-
-  missions.clear20 = {
-    ...missions.clear20,
-    progress: Math.min(MISSION_DEFS[0].target, (missions.clear20?.progress || 0) + (event.linesCleared || 0)),
-  };
-  missions.score1000 = {
-    ...missions.score1000,
-    progress: Math.min(MISSION_DEFS[1].target, Math.max(missions.score1000?.progress || 0, event.score || 0)),
-  };
-  missions.combo3 = {
-    ...missions.combo3,
-    progress: Math.min(MISSION_DEFS[2].target, (missions.combo3?.progress || 0) + (event.comboEvent || 0)),
-  };
-
-  return { ...base, missions };
-}
-
 export function applyGameProgress(profile, event, date = todayKey()) {
-  let nextProfile = {
-    ...profile,
-    highScore: Math.max(profile.highScore, event.score),
-    coins: profile.coins + event.coins,
-  };
+  const tracked = applyProgressEvent(profile, {
+    coinsEarned: event.coins,
+    scoreGain: event.scoreGain,
+    currentRunScore: event.score,
+    linesCleared: event.linesCleared,
+    boardClears: event.boardClears,
+    comboEvents: event.comboEvent,
+    bestCombo: event.bestCombo,
+    boardClearStreak: event.boardClearStreak,
+    feverActivations: event.feverActivations,
+  }, date);
+  let nextProfile = tracked.profile;
 
   const lineRewards = applyLineRewards(nextProfile, event.previousLines, event.linesCleared);
   nextProfile = lineRewards.profile;
@@ -1045,70 +1006,38 @@ export function applyGameProgress(profile, event, date = todayKey()) {
   const xpRewards = applyXP(nextProfile, event.xp);
   nextProfile = xpRewards.profile;
 
-  nextProfile = {
-    ...nextProfile,
-    daily: updateDailyProgress(nextProfile.daily, event, date),
+  return {
+    profile: nextProfile,
+    lineRewards,
+    xpRewards,
+    newlyCompletedMissions: tracked.newlyCompletedMissions,
+    unlockedAchievements: tracked.unlockedAchievements,
   };
-
-  return { profile: nextProfile, lineRewards, xpRewards };
 }
 
 export function claimMission(profile, missionId) {
-  const mission = MISSION_DEFS.find((item) => item.id === missionId);
-  const current = profile.daily.missions[missionId];
-  if (!mission || !current || current.claimed || current.progress < mission.target) {
-    return { profile, claimed: false };
-  }
-
-  return {
-    profile: {
-      ...profile,
-      coins: profile.coins + mission.reward,
-      daily: {
-        ...profile.daily,
-        missions: {
-          ...profile.daily.missions,
-          [missionId]: { ...current, claimed: true },
-        },
-      },
-    },
-    claimed: true,
-    reward: mission.reward,
-  };
+  return claimDailyMission(profile, missionId);
 }
 
 export function buySkin(profile, skinId) {
-  const skin = SKINS.find((item) => item.id === skinId);
-  if (!skin || profile.ownedSkins.includes(skinId) || profile.coins < skin.price) {
-    return { profile, purchased: false };
-  }
-
-  return {
-    profile: {
-      ...profile,
-      coins: profile.coins - skin.price,
-      ownedSkins: [...profile.ownedSkins, skinId],
-      selectedSkin: skinId,
-    },
-    purchased: true,
-  };
+  const result = unlockTheme(profile, skinId);
+  return { ...result, purchased: result.unlocked };
 }
 
 export function selectSkin(profile, skinId) {
-  if (!profile.ownedSkins.includes(skinId)) return { profile, selected: false };
-  return { profile: { ...profile, selectedSkin: skinId }, selected: true };
+  return equipTheme(profile, skinId);
 }
 
 export function buyPowerup(profile, powerupId) {
   const powerup = POWERUPS[powerupId];
-  if (!powerup || profile.coins < powerup.cost) {
+  if (!powerup || profile.totalCoins < powerup.cost) {
     return { profile, purchased: false };
   }
 
   return {
     profile: {
       ...profile,
-      coins: profile.coins - powerup.cost,
+      totalCoins: profile.totalCoins - powerup.cost,
       powerups: {
         ...profile.powerups,
         [powerupId]: (profile.powerups[powerupId] || 0) + 1,
@@ -1160,7 +1089,12 @@ export function openChest(profile, rng = Math.random) {
     return { profile, opened: false };
   }
 
-  const lockedSkins = SKINS.filter((skin) => skin.price > 0 && !profile.ownedSkins.includes(skin.id));
+  const lockedSkins = SKINS.filter(
+    (skin) =>
+      skin.rarity !== "Legendary" &&
+      skin.coinPrice > 0 &&
+      !profile.unlockedThemeIds.includes(skin.id),
+  );
   const shouldGrantSkin = lockedSkins.length > 0 && rng() < 0.28;
 
   if (shouldGrantSkin) {
@@ -1169,7 +1103,7 @@ export function openChest(profile, rng = Math.random) {
       profile: {
         ...profile,
         chestProgress: 0,
-        ownedSkins: [...profile.ownedSkins, skin.id],
+        unlockedThemeIds: [...profile.unlockedThemeIds, skin.id],
       },
       opened: true,
       reward: { type: "skin", skinId: skin.id, label: skin.name },
@@ -1181,7 +1115,8 @@ export function openChest(profile, rng = Math.random) {
     profile: {
       ...profile,
       chestProgress: 0,
-      coins: profile.coins + coins,
+      totalCoins: profile.totalCoins + coins,
+      lifetimeCoinsEarned: profile.lifetimeCoinsEarned + coins,
     },
     opened: true,
     reward: { type: "coins", amount: coins, label: `${coins} coins` },
@@ -1217,11 +1152,43 @@ export function reviveRunFromStorage(rawRun) {
     moves: Number(rawRun.moves) || 0,
     boardClearPity: Math.max(0, Number(rawRun.boardClearPity) || 0),
     boardClears: Math.max(0, Number(rawRun.boardClears) || 0),
+    boardClearStreak: Math.max(
+      0,
+      Number(rawRun.boardClearStreak) || Number(rawRun.boardClears) || 0,
+    ),
+    bestBoardClearStreak: Math.max(
+      0,
+      Number(rawRun.bestBoardClearStreak) || Number(rawRun.boardClears) || 0,
+    ),
+    feverActivations: Math.max(0, Number(rawRun.feverActivations) || 0),
     recentShapeIds: Array.isArray(rawRun.recentShapeIds)
       ? rawRun.recentShapeIds.filter((id) => typeof id === "string").slice(-12)
       : rawRun.pieces.map((piece) => piece.shapeId).filter(Boolean).slice(-12),
     isOver: Boolean(rawRun.isOver),
+    finalized: Boolean(rawRun.finalized),
+    resultSummary:
+      rawRun.resultSummary && typeof rawRun.resultSummary === "object"
+        ? rawRun.resultSummary
+        : null,
+    progressEvents: {
+      missions: Array.isArray(rawRun.progressEvents?.missions)
+        ? rawRun.progressEvents.missions.filter((id) => typeof id === "string")
+        : [],
+      achievements: Array.isArray(rawRun.progressEvents?.achievements)
+        ? rawRun.progressEvents.achievements.filter((id) => typeof id === "string")
+        : [],
+    },
     startedAt: Number(rawRun.startedAt) || Date.now(),
     bestAtStart: Math.max(0, Number(rawRun.bestAtStart) || 0),
+    themeId: isSkinId(rawRun.themeId) ? rawRun.themeId : DEFAULT_SKIN_ID,
+    totalBoardClearsAtStart: Math.max(0, Number(rawRun.totalBoardClearsAtStart) || 0),
+    bestBoardClearStreakAtStart: Math.max(
+      0,
+      Number(rawRun.bestBoardClearStreakAtStart) || 0,
+    ),
+    missionProgressAtStart:
+      rawRun.missionProgressAtStart && typeof rawRun.missionProgressAtStart === "object"
+        ? rawRun.missionProgressAtStart
+        : {},
   };
 }

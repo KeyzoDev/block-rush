@@ -1,8 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
+  Award,
+  BarChart3,
+  BookOpen,
   Bomb,
+  ChevronRight,
   Check,
+  Copy,
   Coins,
   Gift,
   Hammer,
@@ -15,6 +20,7 @@ import {
   Play,
   RotateCcw,
   Settings,
+  Share2,
   ShoppingBag,
   Shuffle,
   Smartphone,
@@ -30,9 +36,7 @@ import {
   BOARD_SIZE,
   BONUS_STAGE,
   CHEST_MAX,
-  MISSION_DEFS,
   POWERUPS,
-  SKINS,
   STORAGE_KEYS,
   advanceBonusStage,
   advanceComboState,
@@ -56,7 +60,6 @@ import {
   getPieceColorIndex,
   getPlacementLines,
   getPlacementReward,
-  getSkin,
   isBoardEmpty,
   levelThreshold,
   normalizeCells,
@@ -70,10 +73,28 @@ import {
   spendPowerup,
 } from "./game/gameLogic.js";
 import {
+  ACHIEVEMENTS,
+  BOARD_CLEAR_MILESTONES,
+  finalizeRunProgress,
+  getMissionDefinition,
+  getNextBoardClearMilestone,
+  getThemeRequirementLabel,
+  getThemeUnlockStatus,
+} from "./progression/progression.js";
+import {
+  SKINS,
+  getSkin,
+  getSkinCssVariables,
+} from "./theme/skins.js";
+import {
   getBoardGridMetrics,
   getDragLift,
   getPlacementCell,
 } from "./game/dragPlacement.js";
+import {
+  copyResultText,
+  createResultShareText,
+} from "./share/resultShare.js";
 
 let audioContext;
 let audioMaster;
@@ -528,7 +549,10 @@ function PiecePreview({ piece, skinId, compact = false }) {
           className={`piece-cell ${index !== undefined ? "filled" : ""}`}
           style={
             index !== undefined
-              ? { background: skin.swatches[getPieceColorIndex(piece, index) % skin.swatches.length] }
+              ? {
+                  "--block-color":
+                    skin.swatches[getPieceColorIndex(piece, index) % skin.swatches.length],
+                }
               : undefined
           }
         />,
@@ -539,6 +563,8 @@ function PiecePreview({ piece, skinId, compact = false }) {
   return (
     <div
       className={`piece-grid ${compact ? "compact" : ""}`}
+      data-theme={skin.id}
+      data-block-motif={skin.visual.blockMotif}
       style={{
         gridTemplateColumns: `repeat(${bounds.width}, var(--piece-cell))`,
         gridTemplateRows: `repeat(${bounds.height}, var(--piece-cell))`,
@@ -609,6 +635,8 @@ function Board({
       ref={boardRef}
       className={`board ${activePower ? "targeting" : ""} ${previewCompleted?.count ? "clear-ready" : ""}`}
       style={{ "--board-bg": selectedSkin.board }}
+      data-theme={selectedSkin.id}
+      data-board-motif={selectedSkin.visual.boardMotif}
     >
       {board.map((row, rowIndex) =>
         row.map((cell, colIndex) => {
@@ -620,8 +648,9 @@ function Board({
           const landDelay = landedCells.get(key);
           const landed = landDelay !== undefined;
           const lineReady = previewRows.has(rowIndex) || previewCols.has(colIndex);
-          const cellSkin = cell ? getSkin(cell.skin) : selectedSkin;
-          const color = cell ? cellSkin.swatches[cell.colorIndex % cellSkin.swatches.length] : undefined;
+          const color = cell
+            ? selectedSkin.swatches[cell.colorIndex % selectedSkin.swatches.length]
+            : undefined;
           const previewColor = preview
             ? selectedSkin.swatches[previewColorIndex % selectedSkin.swatches.length]
             : undefined;
@@ -641,7 +670,7 @@ function Board({
               ].join(" ")}
               key={key}
               style={{
-                ...(color && !preview ? { background: color } : {}),
+                ...(color && !preview ? { "--block-color": color } : {}),
                 ...(previewColor ? { "--preview-color": previewColor } : {}),
                 ...(clearing ? { "--clear-delay": `${clearDelay}ms` } : {}),
                 ...(landed ? { "--land-delay": `${landDelay}ms` } : {}),
@@ -659,6 +688,35 @@ function Board({
           );
         }),
       )}
+    </div>
+  );
+}
+
+function BoardClearFX({ reward, skin }) {
+  const intensity = reward.streak >= 5 ? 4 : reward.streak >= 3 ? 3 : reward.streak >= 2 ? 2 : 1;
+  return (
+    <div
+      className={`board-clear-fx preset-${skin.visual.boardClear.preset} intensity-${intensity}`}
+      aria-hidden="true"
+    >
+      <i className="clear-impact" />
+      <i className="clear-ring ring-one" />
+      <i className="clear-ring ring-two" />
+      <i className="clear-theme-sweep" />
+      <div className="clear-fragments">
+        {Array.from({ length: 18 + intensity * 4 }, (_, index) => (
+          <i
+            key={index}
+            className={`clear-fragment fragment-${skin.visual.boardClear.fragments}`}
+            style={{
+              "--fragment-index": index,
+              "--fragment-angle": `${(360 / (18 + intensity * 4)) * index}deg`,
+              "--fragment-distance": `${92 + (index % 5) * 18}px`,
+              "--fragment-delay": `${(index % 6) * 18}ms`,
+            }}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -681,9 +739,9 @@ function GameScreen({
   onPause,
   tutorialActive,
 }) {
-  const skin = getSkin(profile.selectedSkin);
+  const skin = getSkin(profile.selectedThemeId);
   const previewCompleted = hover?.valid
-    ? getPlacementLines(run.board, hover.piece, hover.row, hover.col, profile.selectedSkin)
+    ? getPlacementLines(run.board, hover.piece, hover.row, hover.col, profile.selectedThemeId)
     : { rows: [], cols: [], count: 0 };
 
   return (
@@ -691,7 +749,7 @@ function GameScreen({
       <header className="top-bar">
         <div className="best-chip">
           <Trophy size={14} aria-hidden="true" />
-          <span>{profile.highScore.toLocaleString()}</span>
+          <span>{profile.bestScore.toLocaleString()}</span>
         </div>
         <div className="score-block">
           <span>Score</span>
@@ -705,11 +763,22 @@ function GameScreen({
         </div>
       </header>
 
-      <div className={`board-wrap ${boardClear ? "board-clear-active" : ""}`}>
+      <div
+        className={[
+          "board-wrap",
+          boardClear ? "board-clear-active" : "",
+          boardClear ? `clear-${skin.visual.boardClear.preset}` : "",
+          boardClear
+            ? `clear-intensity-${boardClear.streak >= 5 ? 4 : boardClear.streak >= 3 ? 3 : boardClear.streak >= 2 ? 2 : 1}`
+            : "",
+        ].join(" ")}
+        data-theme={skin.id}
+        data-fever-preset={skin.visual.fever.preset}
+      >
         <Board
           board={run.board}
           boardRef={boardRef}
-          skinId={profile.selectedSkin}
+          skinId={profile.selectedThemeId}
           hover={hover}
           previewCompleted={previewCompleted}
           clearMarks={clearMarks}
@@ -722,16 +791,21 @@ function GameScreen({
             <i
               key={particle.id}
               className="particle"
+              data-preset={particle.preset}
               style={{
                 left: `${particle.left}%`,
                 top: `${particle.top}%`,
                 "--dx": `${particle.dx}px`,
                 "--dy": `${particle.dy}px`,
-                background: skin.swatches[particle.color],
+                "--particle-color": particle.color,
+                "--particle-rotation": `${particle.rotation}deg`,
+                "--particle-scale": particle.scale,
+                "--particle-delay": `${particle.delay}ms`,
               }}
             />
           ))}
         </div>
+        {boardClear && <BoardClearFX reward={boardClear} skin={skin} />}
         {lastReward && (
           <div
             className="reward-burst"
@@ -742,12 +816,17 @@ function GameScreen({
           </div>
         )}
         {boardClear && (
-          <div className="board-clear-flash" role="status" aria-live="assertive">
+          <div
+            className={`board-clear-flash preset-${skin.visual.boardClear.preset}`}
+            role="status"
+            aria-live="assertive"
+          >
             <span>Perfect sweep</span>
             <strong>
               BOARD CLEAR{boardClear.streak > 1 ? ` x${boardClear.streak}` : ""}!
             </strong>
             <b>+{boardClear.score.toLocaleString()}</b>
+            <em>+{boardClear.coins} coins</em>
           </div>
         )}
       </div>
@@ -763,7 +842,7 @@ function GameScreen({
               disabled={piece.placed || run.isOver}
               aria-label={piece.placed ? "Placed piece" : `Drag ${piece.name}`}
             >
-              <PiecePreview piece={piece} skinId={profile.selectedSkin} />
+              <PiecePreview piece={piece} skinId={profile.selectedThemeId} />
             </button>
           ))}
         </div>
@@ -779,7 +858,7 @@ function GameScreen({
           }}
           aria-hidden="true"
         >
-          <PiecePreview piece={drag.piece} skinId={profile.selectedSkin} compact />
+          <PiecePreview piece={drag.piece} skinId={profile.selectedThemeId} compact />
         </div>
       )}
       {tutorialActive && (
@@ -796,7 +875,7 @@ function GameScreen({
   );
 }
 
-function MainMenu({ run, profile, onPlay, onNewGame, onShop, onMissions, onSettings }) {
+function MainMenu({ run, profile, onPlay, onNewGame, onShop, onMissions, onStats, onSettings }) {
   const hasSavedRun = run.moves > 0 && !run.isOver;
   const visiblePieces = run.pieces.filter((piece) => !piece.placed).slice(0, 3);
   const chestPercent = Math.min(100, (profile.chestProgress / CHEST_MAX) * 100);
@@ -824,7 +903,7 @@ function MainMenu({ run, profile, onPlay, onNewGame, onShop, onMissions, onSetti
           <span className="showcase-glow" />
           {visiblePieces.map((piece, index) => (
             <div className={`showcase-piece piece-${index + 1}`} key={piece.id}>
-              <PiecePreview piece={piece} skinId={profile.selectedSkin} />
+              <PiecePreview piece={piece} skinId={profile.selectedThemeId} />
             </div>
           ))}
         </div>
@@ -833,11 +912,11 @@ function MainMenu({ run, profile, onPlay, onNewGame, onShop, onMissions, onSetti
       <section className="menu-dashboard">
         <div className="best-score-card">
           <span><Trophy size={15} aria-hidden="true" /> Best score</span>
-          <strong>{profile.highScore.toLocaleString()}</strong>
+          <strong>{profile.bestScore.toLocaleString()}</strong>
         </div>
         <div className="menu-resource">
           <span><Coins size={15} aria-hidden="true" /> Coins</span>
-          <strong>{profile.coins.toLocaleString()}</strong>
+          <strong>{profile.totalCoins.toLocaleString()}</strong>
         </div>
         <div className="menu-resource">
           <span><Star size={15} aria-hidden="true" /> Level</span>
@@ -870,52 +949,143 @@ function MainMenu({ run, profile, onPlay, onNewGame, onShop, onMissions, onSetti
       <nav className="menu-grid" aria-label="Main menu">
         <IconButton icon={ShoppingBag} label="Themes" onClick={onShop} />
         <IconButton icon={Target} label="Missions" onClick={onMissions} />
+        <IconButton icon={BarChart3} label="Stats" onClick={onStats} />
         <IconButton icon={Settings} label="Settings" onClick={onSettings} />
       </nav>
     </main>
   );
 }
 
+function ThemeMiniBoard({ skin, large = false }) {
+  const filled = new Set(skin.visual.previewPattern);
+  return (
+    <div
+      className={`theme-mini-board ${large ? "large" : ""}`}
+      style={getSkinCssVariables(skin)}
+      data-theme={skin.id}
+      data-board-motif={skin.visual.boardMotif}
+      data-block-motif={skin.visual.blockMotif}
+      aria-hidden="true"
+    >
+      {Array.from({ length: 16 }, (_, index) => (
+        <i
+          key={index}
+          className={filled.has(index) ? "filled" : ""}
+          style={
+            filled.has(index)
+              ? { "--block-color": skin.swatches[index % skin.swatches.length] }
+              : undefined
+          }
+        />
+      ))}
+    </div>
+  );
+}
+
 function ShopScreen({ profile, onBack, onBuySkin, onSelectSkin, onBuyPowerup }) {
+  const [focusedThemeId, setFocusedThemeId] = useState(profile.selectedThemeId);
+  const focusedTheme = getSkin(focusedThemeId);
+  const focusedStatus = getThemeUnlockStatus(focusedTheme, profile);
+  const focusedEquipped = profile.selectedThemeId === focusedTheme.id;
+  const themeOrder = ["classic", "watermelon", "galaxy", "gold", "candy", "neon", "ocean", "sakura", "marble", "rainbow"];
+  const orderedThemes = [...SKINS].sort(
+    (left, right) => themeOrder.indexOf(left.id) - themeOrder.indexOf(right.id),
+  );
+
   return (
     <main className="panel-screen">
-      <ScreenHeader title="Shop" onBack={onBack} meta={`${profile.coins.toLocaleString()} coins`} />
+      <ScreenHeader title="Shop" onBack={onBack} meta={`${profile.totalCoins.toLocaleString()} coins`} />
+      <section className="theme-focus-card" style={getSkinCssVariables(focusedTheme)}>
+        <ThemeMiniBoard skin={focusedTheme} large />
+        <div className="theme-focus-copy">
+          <span className={`rarity-badge rarity-${focusedTheme.rarity.toLowerCase()}`}>
+            {focusedTheme.rarity}
+          </span>
+          <h2>{focusedTheme.name}</h2>
+          <p>{focusedTheme.description}</p>
+          <strong>{getThemeRequirementLabel(focusedTheme, profile)}</strong>
+          {!focusedStatus.unlocked && (
+            <div className="theme-progress">
+              <i>
+                <b style={{ width: `${Math.min(100, (focusedStatus.progress / focusedStatus.target) * 100)}%` }} />
+              </i>
+              <span>{focusedTheme.coinPrice.toLocaleString()} coin alternative</span>
+            </div>
+          )}
+        </div>
+        {focusedEquipped ? (
+          <button className="mini-button done" type="button" disabled>
+            <Check size={16} aria-hidden="true" />
+            <span>Equipped</span>
+          </button>
+        ) : focusedStatus.unlocked ? (
+          <button className="mini-button" type="button" onClick={() => onSelectSkin(focusedTheme.id)}>
+            <Check size={16} aria-hidden="true" />
+            <span>Equip</span>
+          </button>
+        ) : (
+          <button
+            className="mini-button"
+            type="button"
+            onClick={() => onBuySkin(focusedTheme.id)}
+            disabled={!focusedStatus.requirementMet && !focusedStatus.canBuy}
+          >
+            {focusedStatus.requirementMet ? <Award size={16} aria-hidden="true" /> : <Lock size={16} aria-hidden="true" />}
+            <span>{focusedStatus.requirementMet ? "Unlock" : focusedStatus.canBuy ? "Buy" : "Locked"}</span>
+          </button>
+        )}
+      </section>
       <section className="shop-section">
-        <h2>Block themes</h2>
+        <div className="section-heading">
+          <h2>Block themes</h2>
+          <span>{profile.unlockedThemeIds.length}/{SKINS.length} unlocked</span>
+        </div>
         <div className="skin-list">
-          {SKINS.map((skin) => {
-            const owned = profile.ownedSkins.includes(skin.id);
-            const selected = profile.selectedSkin === skin.id;
+          {orderedThemes.map((skin) => {
+            const status = getThemeUnlockStatus(skin, profile);
+            const selected = profile.selectedThemeId === skin.id;
             return (
-              <article className={`skin-card ${selected ? "selected" : ""}`} key={skin.id}>
-                <div className="skin-preview" style={{ background: skin.board }}>
-                  {skin.swatches.map((color) => (
-                    <span key={color} style={{ background: color }} />
-                  ))}
-                </div>
+              <article
+                className={`skin-card ${selected ? "selected" : ""} ${status.unlocked ? "" : "locked"}`}
+                key={skin.id}
+                onClick={() => setFocusedThemeId(skin.id)}
+              >
+                <ThemeMiniBoard skin={skin} />
                 <div>
+                  <span className={`rarity-badge rarity-${skin.rarity.toLowerCase()}`}>{skin.rarity}</span>
                   <h3>{skin.name}</h3>
-                  <p>{owned ? "Owned" : `${skin.price} coins`}</p>
+                  <p>{status.unlocked ? "Unlocked" : getThemeRequirementLabel(skin, profile)}</p>
+                  {!status.unlocked && <small>or {skin.coinPrice.toLocaleString()} coins</small>}
                 </div>
                 {selected ? (
                   <button className="mini-button done" type="button" disabled>
                     <Check size={16} aria-hidden="true" />
-                    <span>Active</span>
+                    <span>Equipped</span>
                   </button>
-                ) : owned ? (
-                  <button className="mini-button" type="button" onClick={() => onSelectSkin(skin.id)}>
+                ) : status.unlocked ? (
+                  <button
+                    className="mini-button"
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onSelectSkin(skin.id);
+                    }}
+                  >
                     <Check size={16} aria-hidden="true" />
-                    <span>Select</span>
+                    <span>Equip</span>
                   </button>
                 ) : (
                   <button
                     className="mini-button"
                     type="button"
-                    onClick={() => onBuySkin(skin.id)}
-                    disabled={profile.coins < skin.price}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onBuySkin(skin.id);
+                    }}
+                    disabled={!status.requirementMet && !status.canBuy}
                   >
-                    <Lock size={16} aria-hidden="true" />
-                    <span>Buy</span>
+                    {status.requirementMet ? <Award size={16} aria-hidden="true" /> : <Lock size={16} aria-hidden="true" />}
+                    <span>{status.requirementMet ? "Unlock" : status.canBuy ? "Buy" : "Locked"}</span>
                   </button>
                 )}
               </article>
@@ -942,7 +1112,7 @@ function ShopScreen({ profile, onBack, onBuySkin, onSelectSkin, onBuyPowerup }) 
                 className="mini-button"
                 type="button"
                 onClick={() => onBuyPowerup(powerup.id)}
-                disabled={profile.coins < powerup.cost}
+                disabled={profile.totalCoins < powerup.cost}
               >
                 <Coins size={16} aria-hidden="true" />
                 <span>{powerup.cost}</span>
@@ -956,19 +1126,22 @@ function ShopScreen({ profile, onBack, onBuySkin, onSelectSkin, onBuyPowerup }) 
 }
 
 function MissionsScreen({ profile, onBack, onClaim, onOpenChest }) {
+  const nextMilestone = getNextBoardClearMilestone(profile.totalBoardClears);
   return (
     <main className="panel-screen">
       <ScreenHeader title="Missions" onBack={onBack} meta="Daily" />
       <section className="mission-list">
-        {MISSION_DEFS.map((mission) => {
-          const state = profile.daily.missions[mission.id] || { progress: 0, claimed: false };
+        {profile.dailyMissionIds.map((missionId) => {
+          const mission = getMissionDefinition(missionId);
+          const state = profile.dailyMissionProgress[missionId] || { progress: 0, claimed: false };
           const ready = state.progress >= mission.target;
           return (
-            <article className="mission-card" key={mission.id}>
-              <div className="mission-icon">
-                <Target size={20} aria-hidden="true" />
+            <article className={`mission-card ${ready ? "complete" : ""}`} key={mission.id}>
+              <div className="mission-icon" data-tier={mission.tier}>
+                {ready ? <Check size={20} aria-hidden="true" /> : <Target size={20} aria-hidden="true" />}
               </div>
               <div className="mission-body">
+                <span>{mission.tier}</span>
                 <h2>{mission.title}</h2>
                 <ProgressBar value={Math.min(state.progress, mission.target)} max={mission.target} label="Progress" />
               </div>
@@ -986,6 +1159,25 @@ function MissionsScreen({ profile, onBack, onClaim, onOpenChest }) {
         })}
       </section>
 
+      <section className="milestone-card">
+        <div>
+          <span className="eyebrow">Board Clear journey</span>
+          <h2>Next milestone: {nextMilestone}</h2>
+        </div>
+        <ProgressBar
+          value={Math.min(profile.totalBoardClears, nextMilestone)}
+          max={nextMilestone}
+          label={`${profile.totalBoardClears} lifetime clears`}
+        />
+        <div className="milestone-pips" aria-label="Board Clear milestones">
+          {BOARD_CLEAR_MILESTONES.map((milestone) => (
+            <i className={profile.totalBoardClears >= milestone ? "done" : ""} key={milestone}>
+              {milestone}
+            </i>
+          ))}
+        </div>
+      </section>
+
       <section className="chest-panel">
         <Gift size={28} aria-hidden="true" />
         <div>
@@ -1001,7 +1193,75 @@ function MissionsScreen({ profile, onBack, onClaim, onOpenChest }) {
   );
 }
 
-function SettingsScreen({ profile, onBack, onToggleSetting, onResetProgress, confirmReset, onConfirmReset }) {
+function StatsScreen({ profile, onBack }) {
+  const averageScore = profile.totalGamesPlayed
+    ? Math.round(profile.lifetimeScore / profile.totalGamesPlayed)
+    : 0;
+  const hours = Math.floor(profile.totalPlayTime / 3600);
+  const minutes = Math.floor((profile.totalPlayTime % 3600) / 60);
+  const playTime = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+  const favoriteTheme = getSkin(profile.selectedThemeId);
+  const stats = [
+    [Trophy, "Best Score", profile.bestScore.toLocaleString()],
+    [Zap, "Lifetime Score", profile.lifetimeScore.toLocaleString()],
+    [Play, "Games Played", profile.totalGamesPlayed.toLocaleString()],
+    [Target, "Lines Cleared", profile.totalLinesCleared.toLocaleString()],
+    [Star, "Board Clears", profile.totalBoardClears.toLocaleString()],
+    [Award, "Best Clear Streak", `x${profile.bestBoardClearStreak}`],
+    [Shuffle, "Total Combos", profile.totalCombos.toLocaleString()],
+    [Zap, "Best Combo", `x${profile.bestCombo}`],
+    [Gift, "Rush Fevers", profile.totalFeverActivations.toLocaleString()],
+    [Coins, "Coins Earned", profile.lifetimeCoinsEarned.toLocaleString()],
+    [ShoppingBag, "Themes", `${profile.unlockedThemeIds.length}/${SKINS.length}`],
+    [BarChart3, "Average Score", averageScore.toLocaleString()],
+  ];
+
+  return (
+    <main className="panel-screen">
+      <ScreenHeader title="Player Stats" onBack={onBack} meta={`${playTime} played`} />
+      <section className="stats-highlight">
+        <ThemeMiniBoard skin={favoriteTheme} large />
+        <div>
+          <span className="eyebrow">Equipped theme</span>
+          <h2>{favoriteTheme.name}</h2>
+          <p>{profile.totalBoardClears} lifetime Board Clears</p>
+        </div>
+      </section>
+      <section className="stats-card-grid">
+        {stats.map(([Icon, label, value]) => (
+          <article className="stats-card" key={label}>
+            <Icon size={18} aria-hidden="true" />
+            <span>{label}</span>
+            <strong>{value}</strong>
+          </article>
+        ))}
+      </section>
+      <section className="achievement-section">
+        <div className="section-heading">
+          <h2>Achievements</h2>
+          <span>{profile.achievements.length}/{ACHIEVEMENTS.length}</span>
+        </div>
+        <div className="achievement-grid">
+          {ACHIEVEMENTS.map((achievement) => {
+            const unlocked = profile.achievements.includes(achievement.id);
+            return (
+              <article className={unlocked ? "unlocked" : "locked"} key={achievement.id}>
+                <Award size={19} aria-hidden="true" />
+                <div>
+                  <h3>{achievement.title}</h3>
+                  <p>{achievement.description}</p>
+                </div>
+                {unlocked ? <Check size={16} aria-hidden="true" /> : <Lock size={15} aria-hidden="true" />}
+              </article>
+            );
+          })}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function SettingsScreen({ profile, onBack, onToggleSetting, onReplayTutorial, onResetProgress }) {
   return (
     <main className="panel-screen">
       <ScreenHeader title="Settings" onBack={onBack} meta="Local save" />
@@ -1026,10 +1286,15 @@ function SettingsScreen({ profile, onBack, onToggleSetting, onResetProgress, con
           <span>Haptics</span>
           <strong>{profile.settings.haptics ? "On" : "Off"}</strong>
         </button>
-        <button className={`setting-row danger ${confirmReset ? "confirm" : ""}`} type="button" onClick={confirmReset ? onConfirmReset : onResetProgress}>
+        <button className="setting-row" type="button" onClick={onReplayTutorial}>
+          <BookOpen size={20} aria-hidden="true" />
+          <span>Replay tutorial</span>
+          <ChevronRight size={18} aria-hidden="true" />
+        </button>
+        <button className="setting-row danger" type="button" onClick={onResetProgress}>
           <RotateCcw size={20} aria-hidden="true" />
-          <span>{confirmReset ? "Confirm reset" : "Reset progress"}</span>
-          <strong>{confirmReset ? "Tap" : ""}</strong>
+          <span>Reset progress</span>
+          <ChevronRight size={18} aria-hidden="true" />
         </button>
       </section>
     </main>
@@ -1050,26 +1315,86 @@ function ScreenHeader({ title, meta, onBack }) {
   );
 }
 
-function GameOverScreen({ run, profile, onRestart, onMenu, onShop }) {
+function GameOverScreen({ run, profile, onRestart, onMenu, onShop, onMissions, onShare, onCopy }) {
   const bestBeat = run.score > (run.bestAtStart || 0);
-  const motivation = bestBeat ? "New best!" : run.score >= profile.highScore * 0.85 ? "So close!" : "One more round?";
+  const motivation = bestBeat ? "New best!" : run.score >= profile.bestScore * 0.85 ? "So close!" : "One more round?";
+  const summary = run.resultSummary || {};
+  const completedMissions = (summary.newlyCompletedMissions || [])
+    .map(getMissionDefinition)
+    .filter(Boolean);
+  const unlockedAchievements = (summary.unlockedAchievements || [])
+    .map((id) => ACHIEVEMENTS.find((achievement) => achievement.id === id))
+    .filter(Boolean);
+  const readyThemes = (summary.newlyEligibleThemes || []).map(getSkin);
+  const missionGains = Object.entries(summary.missionProgressGained || {})
+    .filter(([, gain]) => gain > 0)
+    .map(([id, gain]) => ({ mission: getMissionDefinition(id), gain }))
+    .filter((item) => item.mission);
+  const resultTheme = getSkin(run.themeId || profile.selectedThemeId);
   return (
     <main className="panel-screen game-over">
-      <section className="game-over-hero">
-        <div className="trophy-ring">
-          <Trophy size={38} aria-hidden="true" />
+      <section className="result-share-card" style={getSkinCssVariables(resultTheme)}>
+        <div className="result-brand">
+          <span>Block</span>
+          <strong>Rush</strong>
         </div>
-        <span className="eyebrow">Game Over</span>
+        <span className="eyebrow">{bestBeat ? "New Best!" : "Final Score"}</span>
         <h1>{run.score.toLocaleString()}</h1>
-        {bestBeat && <span className="new-best-badge">New Best</span>}
-        <p>{motivation}</p>
+        <div className="share-card-stats">
+          <span><Award size={15} /> Board Clears <strong>{run.boardClears || 0}</strong></span>
+          <span><Star size={15} /> Best Streak <strong>x{run.bestBoardClearStreak || 0}</strong></span>
+          <span><Zap size={15} /> Combo <strong>x{run.biggestCombo || 0}</strong></span>
+          <span><Coins size={15} /> Coins <strong>+{run.coinsEarned || 0}</strong></span>
+        </div>
+        <div className="result-theme">
+          <ThemeMiniBoard skin={resultTheme} />
+          <span>{resultTheme.name}</span>
+        </div>
+        <p>Can you beat me?</p>
       </section>
+      <p className="result-motivation">{motivation}</p>
       <section className="result-stats">
-        <StatPill icon={Trophy} label="Best" value={profile.highScore.toLocaleString()} />
+        <StatPill icon={Trophy} label="Best" value={profile.bestScore.toLocaleString()} />
         <StatPill icon={Zap} label="Lines" value={run.totalLines} />
         <StatPill icon={Star} label="Best combo" value={`x${run.biggestCombo || 0}`} />
         <StatPill icon={Coins} label="Earned" value={`+${run.coinsEarned || 0}`} />
+        <StatPill icon={Award} label="Board Clears" value={run.boardClears || 0} />
+        <StatPill icon={Gift} label="Rush Fever" value={run.feverActivations || 0} />
+        <StatPill icon={Star} label="Clear streak" value={`x${run.bestBoardClearStreak || 0}`} />
       </section>
+      {(missionGains.length > 0 || completedMissions.length > 0 || unlockedAchievements.length > 0 || readyThemes.length > 0) && (
+        <section className="run-progress-summary">
+          <span className="eyebrow">Progress gained</span>
+          {missionGains.map(({ mission, gain }) => (
+            <div key={`gain-${mission.id}`}>
+              <Target size={16} aria-hidden="true" />
+              <span>{mission.title}</span>
+              <strong>+{gain}</strong>
+            </div>
+          ))}
+          {completedMissions.map((mission) => (
+            <div key={mission.id}>
+              <Check size={16} aria-hidden="true" />
+              <span>{mission.title}</span>
+              <strong>+{mission.reward}</strong>
+            </div>
+          ))}
+          {unlockedAchievements.map((achievement) => (
+            <div key={achievement.id}>
+              <Award size={16} aria-hidden="true" />
+              <span>{achievement.title}</span>
+              <strong>Achievement</strong>
+            </div>
+          ))}
+          {readyThemes.map((theme) => (
+            <div key={theme.id}>
+              <ShoppingBag size={16} aria-hidden="true" />
+              <span>{theme.name}</span>
+              <strong>Ready</strong>
+            </div>
+          ))}
+        </section>
+      )}
       <section className="primary-actions">
         <button className="primary-button" type="button" onClick={onRestart}>
           <RotateCcw size={20} aria-hidden="true" />
@@ -1077,7 +1402,19 @@ function GameOverScreen({ run, profile, onRestart, onMenu, onShop }) {
         </button>
         <button className="secondary-button" type="button" onClick={onShop}>
           <ShoppingBag size={18} aria-hidden="true" />
-          <span>Shop</span>
+          <span>Theme Shop</span>
+        </button>
+        <button className="secondary-button" type="button" onClick={onMissions}>
+          <Target size={18} aria-hidden="true" />
+          <span>Missions</span>
+        </button>
+        <button className="secondary-button" type="button" onClick={onShare}>
+          <Share2 size={18} aria-hidden="true" />
+          <span>Share Result</span>
+        </button>
+        <button className="secondary-button" type="button" onClick={onCopy}>
+          <Copy size={18} aria-hidden="true" />
+          <span>Copy Result</span>
         </button>
         <button className="secondary-button" type="button" onClick={onMenu}>
           <Home size={18} aria-hidden="true" />
@@ -1088,6 +1425,145 @@ function GameOverScreen({ run, profile, onRestart, onMenu, onShop }) {
   );
 }
 
+const TUTORIAL_STEPS = [
+  {
+    title: "Drag Blocks",
+    text: "Place the 3 blocks onto the board.",
+    kind: "drag",
+  },
+  {
+    title: "Clear Lines",
+    text: "Fill rows or columns to clear them and score points.",
+    kind: "lines",
+  },
+  {
+    title: "Board Clear!",
+    text: "Clear the whole board for a huge bonus.",
+    kind: "clear",
+  },
+  {
+    title: "Unlock Themes",
+    text: "Earn coins, complete missions, and unlock new themes.",
+    kind: "themes",
+  },
+];
+
+function TutorialVisual({ kind, skin }) {
+  if (kind === "themes") {
+    return (
+      <div className="tutorial-themes" aria-hidden="true">
+        <ThemeMiniBoard skin={skin} large />
+        <Coins size={28} />
+        <ShoppingBag size={30} />
+      </div>
+    );
+  }
+
+  return (
+    <div className={`tutorial-board tutorial-${kind}`} aria-hidden="true">
+      {Array.from({ length: 16 }, (_, index) => (
+        <i
+          key={index}
+          className={
+            kind === "clear"
+              ? index < 3 ? "filled clearing" : ""
+              : kind === "lines"
+                ? [4, 5, 6, 7, 9, 13].includes(index) ? "filled" : ""
+                : [10, 11, 15].includes(index) ? "filled moving" : ""
+          }
+          style={{ "--tutorial-color": skin.swatches[index % skin.swatches.length] }}
+        />
+      ))}
+      {kind === "drag" && <Hand size={30} />}
+    </div>
+  );
+}
+
+function TutorialModal({ skin, onComplete }) {
+  const [step, setStep] = useState(0);
+  const current = TUTORIAL_STEPS[step];
+  const last = step === TUTORIAL_STEPS.length - 1;
+
+  return (
+    <div className="modal-layer tutorial-layer" role="dialog" aria-modal="true" aria-label="How to play">
+      <section className="modal-card tutorial-card">
+        <div className="tutorial-top">
+          <span>How to play</span>
+          <button type="button" onClick={onComplete}>Skip</button>
+        </div>
+        <TutorialVisual kind={current.kind} skin={skin} />
+        <div className="tutorial-copy">
+          <span>Step {step + 1} of {TUTORIAL_STEPS.length}</span>
+          <h2>{current.title}</h2>
+          <p>{current.text}</p>
+        </div>
+        <div className="tutorial-dots" aria-hidden="true">
+          {TUTORIAL_STEPS.map((item, index) => (
+            <i className={index === step ? "active" : index < step ? "done" : ""} key={item.title} />
+          ))}
+        </div>
+        <button
+          className="primary-button"
+          type="button"
+          onClick={() => last ? onComplete() : setStep((value) => value + 1)}
+        >
+          <span>{last ? "Start Playing" : "Next"}</span>
+          {!last && <ChevronRight size={18} aria-hidden="true" />}
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function ShareModal({ text, onShare, onCopy, onClose }) {
+  return (
+    <div className="modal-layer" role="dialog" aria-modal="true" aria-label="Share result">
+      <section className="modal-card share-modal">
+        <button className="round-button close" type="button" onClick={onClose} title="Close">
+          <X size={18} aria-hidden="true" />
+        </button>
+        <Share2 size={34} aria-hidden="true" />
+        <h2>Challenge a friend</h2>
+        <pre>{text}</pre>
+        <button className="primary-button" type="button" onClick={onShare}>
+          <Share2 size={18} aria-hidden="true" />
+          <span>Share Result</span>
+        </button>
+        <button className="secondary-button" type="button" onClick={onCopy}>
+          <Copy size={18} aria-hidden="true" />
+          <span>Copy Result</span>
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function ResetConfirmModal({ onCancel, onConfirm }) {
+  return (
+    <div className="modal-layer" role="dialog" aria-modal="true" aria-label="Confirm reset">
+      <section className="modal-card reset-modal">
+        <RotateCcw size={32} aria-hidden="true" />
+        <h2>Reset all progress?</h2>
+        <p>This removes scores, coins, themes, missions, achievements, and settings from this device.</p>
+        <button className="secondary-button" type="button" onClick={onCancel}>Keep Progress</button>
+        <button className="primary-button danger-button" type="button" onClick={onConfirm}>Reset Everything</button>
+      </section>
+    </div>
+  );
+}
+
+function SplashScreen() {
+  return (
+    <div className="splash-screen" aria-label="Loading Block Rush">
+      <div className="splash-mark">
+        <i /><i /><i /><i />
+      </div>
+      <div className="splash-logo"><span>Block</span><strong>Rush</strong></div>
+      <div className="splash-loader"><i /></div>
+    </div>
+  );
+}
+
 function PauseModal({ profile, onResume, onRestart, onMenu, onSettings, onMissions, onShop, onPowerup }) {
   const xpMax = levelThreshold(profile.level);
   return (
@@ -1095,7 +1571,7 @@ function PauseModal({ profile, onResume, onRestart, onMenu, onSettings, onMissio
       <section className="modal-card pause-card game-menu-card">
         <h2>Game Menu</h2>
         <div className="menu-progress">
-          <StatPill icon={Coins} label="Coins" value={profile.coins.toLocaleString()} />
+          <StatPill icon={Coins} label="Coins" value={profile.totalCoins.toLocaleString()} />
           <StatPill icon={Star} label="Level" value={profile.level} />
           <StatPill icon={Gift} label="Chest" value={`${profile.chestProgress}/${CHEST_MAX}`} />
         </div>
@@ -1176,6 +1652,27 @@ function ChestModal({ state, onOpen, onClose }) {
   );
 }
 
+function ThemeUnlockModal({ theme, onClose }) {
+  return (
+    <div className="modal-layer" role="dialog" aria-modal="true">
+      <section className="modal-card theme-unlock-modal" style={getSkinCssVariables(theme)}>
+        <span className={`rarity-badge rarity-${theme.rarity.toLowerCase()}`}>{theme.rarity}</span>
+        <ThemeMiniBoard skin={theme} large />
+        <span className="eyebrow">Theme unlocked</span>
+        <h2>{theme.name}</h2>
+        <p>{theme.description}</p>
+        <button className="primary-button" type="button" onClick={onClose}>
+          <Check size={18} aria-hidden="true" />
+          <span>Equip Now</span>
+        </button>
+        <button className="secondary-button" type="button" onClick={onClose}>
+          <span>Continue</span>
+        </button>
+      </section>
+    </div>
+  );
+}
+
 function Toast({ toast }) {
   if (!toast) return null;
   return <div className="toast">{toast}</div>;
@@ -1194,7 +1691,7 @@ function PraiseFlash({ label, combo }) {
 function App() {
   const [profile, setProfile] = useState(() => normalizeProfile(readJson(STORAGE_KEYS.profile)));
   const [run, setRun] = useState(
-    () => reviveRunFromStorage(readJson(STORAGE_KEYS.run)) || createRun(Math.random, profile.highScore),
+    () => reviveRunFromStorage(readJson(STORAGE_KEYS.run)) || createRun(Math.random, profile.bestScore, profile),
   );
   const [screen, setScreen] = useState("menu");
   const [returnScreen, setReturnScreen] = useState("menu");
@@ -1209,6 +1706,10 @@ function App() {
   const [boardClearFlash, setBoardClearFlash] = useState(null);
   const [lastReward, setLastReward] = useState(null);
   const [chestState, setChestState] = useState(null);
+  const [themeUnlockState, setThemeUnlockState] = useState(null);
+  const [tutorialIntent, setTutorialIntent] = useState(null);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [showSplash, setShowSplash] = useState(true);
   const [paused, setPaused] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [shake, setShake] = useState(false);
@@ -1227,7 +1728,16 @@ function App() {
   const pendingPointer = useRef(null);
   const audioUnlockedRef = useRef(false);
 
-  const selectedSkin = useMemo(() => getSkin(profile.selectedSkin), [profile.selectedSkin]);
+  const selectedSkin = useMemo(() => getSkin(profile.selectedThemeId), [profile.selectedThemeId]);
+  const shareText = useMemo(
+    () => createResultShareText(run, profile, getSkin(run.themeId || profile.selectedThemeId).name),
+    [run, profile.bestScore, profile.selectedThemeId],
+  );
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setShowSplash(false), 620);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     saveJson(STORAGE_KEYS.profile, profile);
@@ -1236,6 +1746,25 @@ function App() {
   useEffect(() => {
     saveJson(STORAGE_KEYS.run, run);
   }, [run]);
+
+  useEffect(() => {
+    if (!run.isOver || run.finalized) return;
+    const finalized = finalizeRunProgress(profile, run);
+    setProfile(finalized.profile);
+    setRun(finalized.run);
+  }, [run.isOver, run.finalized]);
+
+  useEffect(() => {
+    document.documentElement.dataset.skin = selectedSkin.id;
+    document.documentElement.style.colorScheme = selectedSkin.tone;
+    let themeMeta = document.querySelector('meta[name="theme-color"]');
+    if (!themeMeta) {
+      themeMeta = document.createElement("meta");
+      themeMeta.name = "theme-color";
+      document.head.append(themeMeta);
+    }
+    themeMeta.content = selectedSkin.ui.backgroundEnd;
+  }, [selectedSkin]);
 
   useEffect(() => {
     setMusic(Boolean(profile.settings.music && audioUnlocked));
@@ -1260,7 +1789,13 @@ function App() {
     rewardTimer.current = window.setTimeout(() => setLastReward(null), 820);
   }
 
-  function addParticles(amount, origins = [[3.5, 3.5]]) {
+  function addParticles(
+    amount,
+    origins = [[3.5, 3.5]],
+    preset = selectedSkin.visual.particle,
+    duration = 760,
+  ) {
+    const colors = preset.colors || selectedSkin.swatches;
     const nextParticles = Array.from({ length: amount }, (_, index) => ({
       id: `${Date.now()}-${index}`,
       ...(() => {
@@ -1270,12 +1805,16 @@ function App() {
           top: ((row + 0.5) / BOARD_SIZE) * 100 + (Math.random() - 0.5) * 4,
           dx: -78 + Math.random() * 156,
           dy: -105 + Math.random() * 90,
-          color: index % selectedSkin.swatches.length,
+          color: colors[index % colors.length],
+          preset: preset.preset,
+          rotation: Math.round(Math.random() * 280 - 140),
+          scale: (0.68 + Math.random() * 0.82).toFixed(2),
+          delay: Math.round(Math.random() * 90),
         };
       })(),
     }));
     setParticles(nextParticles);
-    window.setTimeout(() => setParticles([]), 760);
+    window.setTimeout(() => setParticles([]), duration);
   }
 
   function flashPraise(label, combo, lineCount) {
@@ -1295,7 +1834,7 @@ function App() {
     window.setTimeout(() => setShake(false), strong ? 380 : 260);
   }
 
-  function finalizeRunAfterMove(baseRun, boardAfterClear, piecesAfterPlacement) {
+  function finalizeRunAfterMove(baseRun, boardAfterClear, piecesAfterPlacement, progressProfile = profile) {
     const refreshedHand = piecesAfterPlacement.every((piece) => piece.placed);
     const generatedPieces = refreshedHand
       ? generateHand(Math.random, Date.now(), {
@@ -1317,7 +1856,7 @@ function App() {
       totalLines: baseRun.totalLines,
     });
     const isOver = !canAnyPieceFit(boardAfterClear, nextPieces);
-    const finalRun = {
+    let finalRun = {
       ...baseRun,
       board: boardAfterClear,
       pieces: nextPieces,
@@ -1327,8 +1866,10 @@ function App() {
       boardClearPity: offeredBoardClear ? 0 : baseRun.boardClearPity,
       isOver,
     };
-    setRun(finalRun);
     if (isOver) {
+      const finalized = finalizeRunProgress(progressProfile, finalRun);
+      finalRun = finalized.run;
+      setProfile(finalized.profile);
       playSound(
         finalRun.score > (finalRun.bestAtStart || 0) ? "newBest" : "gameOver",
         profile.settings.sound,
@@ -1336,6 +1877,7 @@ function App() {
       window.clearTimeout(gameOverTimer.current);
       gameOverTimer.current = window.setTimeout(() => setScreen("gameover"), 520);
     }
+    setRun(finalRun);
     return finalRun;
   }
 
@@ -1350,7 +1892,7 @@ function App() {
       return false;
     }
 
-    const placedBoard = placePiece(run.board, piece, row, col, profile.selectedSkin);
+    const placedBoard = placePiece(run.board, piece, row, col, profile.selectedThemeId);
     setLandingMarks(
       piece.cells.map(([cellRow, cellCol], index) => ({
         row: row + cellRow,
@@ -1397,13 +1939,20 @@ function App() {
       run.pieces.map((item) => (item.id === pieceId ? { ...item, placed: true } : item)),
       bonusAfterMove,
     );
+    const placementCoin = completed.count === 0 && (run.moves + 1) % 6 === 0 ? 1 : 0;
+    const earnedCoins = reward.coins + boardClearReward.coins + placementCoin;
     const progress = applyGameProgress(profile, {
       score,
-      coins: reward.coins + boardClearReward.coins,
+      scoreGain: reward.score + boardClearReward.score,
+      coins: earnedCoins,
       xp: reward.xp + boardClearReward.xp,
       previousLines: run.totalLines,
       linesCleared: completed.count,
       comboEvent: completed.count > 0 && reward.nextCombo >= 2 ? 1 : 0,
+      bestCombo: comboAfterMove,
+      boardClears: boardClear ? 1 : 0,
+      boardClearStreak,
+      feverActivations: bonusTriggered ? 1 : 0,
     });
     const baseRun = {
       ...run,
@@ -1415,16 +1964,33 @@ function App() {
       comboMisses: comboState.misses,
       bonus: bonusAfterMove,
       totalLines,
-      coinsEarned: (run.coinsEarned || 0) + Math.max(0, progress.profile.coins - profile.coins),
+      coinsEarned: (run.coinsEarned || 0) + Math.max(0, progress.profile.totalCoins - profile.totalCoins),
       xpEarned: (run.xpEarned || 0) + reward.xp + boardClearReward.xp,
       moves: run.moves + 1,
       boardClearPity: boardClear ? 0 : (run.boardClearPity || 0) + 1,
       boardClears: boardClearStreak,
+      boardClearStreak,
+      bestBoardClearStreak: Math.max(run.bestBoardClearStreak || 0, boardClearStreak),
+      feverActivations: (run.feverActivations || 0) + (bonusTriggered ? 1 : 0),
+      progressEvents: {
+        missions: [...new Set([
+          ...(run.progressEvents?.missions || []),
+          ...progress.newlyCompletedMissions,
+        ])],
+        achievements: [...new Set([
+          ...(run.progressEvents?.achievements || []),
+          ...progress.unlockedAchievements.map((achievement) => achievement.id),
+        ])],
+      },
     };
 
     setProfile(progress.profile);
     if (progress.xpRewards.levelsGained > 0) {
       notify(`Level ${progress.profile.level}`);
+    } else if (progress.unlockedAchievements.length > 0) {
+      notify(`Achievement: ${progress.unlockedAchievements[0].title}`);
+    } else if (progress.newlyCompletedMissions.length > 0) {
+      notify("Daily mission complete");
     }
     if (bonusTriggered) {
       notify(`Rush Bonus x${BONUS_STAGE.scoreMultiplier}`);
@@ -1470,7 +2036,7 @@ function App() {
       );
       showReward({
         score: reward.score + boardClearReward.score,
-        coins: reward.coins + boardClearReward.coins,
+        coins: earnedCoins,
         lines: completed.count,
         left: ((rewardCenter.col + 0.5) / BOARD_SIZE) * 100,
         top: ((rewardCenter.row + 0.5) / BOARD_SIZE) * 100,
@@ -1478,11 +2044,18 @@ function App() {
       addParticles(
         boardClear ? 72 : 18 + completed.count * 12 + comboAfterMove * 5,
         boardClear ? [[3.5, 3.5]] : cleared.clearedCells,
+        boardClear
+          ? {
+              preset: selectedSkin.visual.boardClear.particlePreset,
+              colors: selectedSkin.visual.particle.colors,
+            }
+          : selectedSkin.visual.particle,
+        boardClear ? 1350 : 760,
       );
       if (boardClear) {
         setBoardClearFlash({ ...boardClearReward, streak: boardClearStreak });
         window.clearTimeout(boardClearTimer.current);
-        boardClearTimer.current = window.setTimeout(() => setBoardClearFlash(null), 1250);
+        boardClearTimer.current = window.setTimeout(() => setBoardClearFlash(null), 1450);
         window.clearTimeout(praiseTimer.current);
         setPraiseFlash(null);
         speakPraise("BOARD CLEAR!", profile.settings.voice && audioUnlockedRef.current, 6, true);
@@ -1492,12 +2065,12 @@ function App() {
       triggerShake(boardClear || completed.count > 1 || comboAfterMove >= 2);
       window.setTimeout(() => {
         setClearMarks([]);
-        finalizeRunAfterMove(baseRun, cleared.board, piecesAfterPlacement);
+        finalizeRunAfterMove(baseRun, cleared.board, piecesAfterPlacement, progress.profile);
         setClearing(false);
-      }, boardClear ? 660 : 470);
+      }, boardClear ? 720 : 470);
     } else {
       haptic(profile.settings.haptics, 8);
-      finalizeRunAfterMove(baseRun, placedBoard, piecesAfterPlacement);
+      finalizeRunAfterMove(baseRun, placedBoard, piecesAfterPlacement, progress.profile);
     }
     return true;
   }
@@ -1506,9 +2079,6 @@ function App() {
     unlockAudio();
     if (!event.isPrimary || event.button > 0 || piece.placed || run.isOver || clearing || paused) return;
     event.preventDefault();
-    if (!profile.tutorialSeen) {
-      setProfile((current) => ({ ...current, tutorialSeen: true }));
-    }
     setActivePower(null);
     const cellSize = getBoardCellSize(boardRef.current);
     const lift = getDragLift(cellSize);
@@ -1616,12 +2186,41 @@ function App() {
 
   function startNewGame() {
     unlockAudio();
-    const nextRun = createRun(Math.random, profile.highScore);
+    const nextRun = {
+      ...createRun(Math.random, profile.bestScore, profile),
+      themeId: profile.selectedThemeId,
+    };
     window.clearTimeout(gameOverTimer.current);
     setRun(nextRun);
     setPaused(false);
     setActivePower(null);
     setScreen("game");
+  }
+
+  function requestPlay(fresh = false) {
+    unlockAudio();
+    if (!profile.tutorialCompleted) {
+      setTutorialIntent(fresh ? "new" : "continue");
+      return;
+    }
+    if (fresh) startNewGame();
+    else setScreen("game");
+  }
+
+  function completeTutorial() {
+    setProfile((current) => ({
+      ...current,
+      tutorialCompleted: true,
+      tutorialSeen: true,
+    }));
+    const intent = tutorialIntent;
+    setTutorialIntent(null);
+    if (intent === "new") startNewGame();
+    if (intent === "continue") setScreen("game");
+  }
+
+  function replayTutorial() {
+    setTutorialIntent("replay");
   }
 
   function openSettingsScreen(from) {
@@ -1664,13 +2263,19 @@ function App() {
         nextIndex += 1;
         return nextPiece;
       }), run.bonus);
-      const nextRun = {
+      let nextRun = {
         ...run,
         pieces,
         recentShapeIds: [...(run.recentShapeIds || []), ...fresh.map((piece) => piece.shapeId)].slice(-12),
         isOver: !canAnyPieceFit(run.board, pieces),
       };
-      setProfile(spent.profile);
+      let nextProfile = spent.profile;
+      if (nextRun.isOver) {
+        const finalized = finalizeRunProgress(nextProfile, nextRun);
+        nextProfile = finalized.profile;
+        nextRun = finalized.run;
+      }
+      setProfile(nextProfile);
       setRun(nextRun);
       playSound("reward", profile.settings.sound);
       notify("Pieces shuffled");
@@ -1702,6 +2307,7 @@ function App() {
     const score = run.score + scoreGain;
     const progress = applyGameProgress(spent.profile, {
       score,
+      scoreGain,
       coins: Math.floor(scoreGain / 80),
       xp: Math.max(3, result.removed * 4),
       previousLines: run.totalLines,
@@ -1709,15 +2315,32 @@ function App() {
       comboEvent: 0,
     });
     const isOver = !canAnyPieceFit(result.board, run.pieces);
-    setProfile(progress.profile);
-    setRun({
+    let nextRun = {
       ...run,
       board: result.board,
       score,
-      coinsEarned: (run.coinsEarned || 0) + Math.max(0, progress.profile.coins - spent.profile.coins),
+      coinsEarned: (run.coinsEarned || 0) + Math.max(0, progress.profile.totalCoins - spent.profile.totalCoins),
       xpEarned: (run.xpEarned || 0) + Math.max(3, result.removed * 4),
       isOver,
-    });
+      progressEvents: {
+        missions: [...new Set([
+          ...(run.progressEvents?.missions || []),
+          ...progress.newlyCompletedMissions,
+        ])],
+        achievements: [...new Set([
+          ...(run.progressEvents?.achievements || []),
+          ...progress.unlockedAchievements.map((achievement) => achievement.id),
+        ])],
+      },
+    };
+    let nextProfile = progress.profile;
+    if (isOver) {
+      const finalized = finalizeRunProgress(nextProfile, nextRun);
+      nextProfile = finalized.profile;
+      nextRun = finalized.run;
+    }
+    setProfile(nextProfile);
+    setRun(nextRun);
     setActivePower(null);
     showReward({ score: scoreGain, coins: Math.floor(scoreGain / 80), lines: 0 });
     addParticles(activePower === "hammer" ? 10 : 24);
@@ -1735,19 +2358,24 @@ function App() {
     }
     setProfile(result.profile);
     playSound("reward", profile.settings.sound);
-    notify(`+${result.reward} coins`);
+    notify(
+      result.unlockedAchievements?.length
+        ? `Achievement: ${result.unlockedAchievements[0].title}`
+        : `+${result.reward} coins`,
+    );
   }
 
   function handleBuySkin(skinId) {
     unlockAudio();
     const result = buySkin(profile, skinId);
     if (!result.purchased) {
-      notify("Not enough coins");
+      notify(result.reason === "locked" ? "Requirement or coins needed" : "Theme unavailable");
       return;
     }
     setProfile(result.profile);
+    setThemeUnlockState(getSkin(skinId));
     playSound("reward", profile.settings.sound);
-    notify("Theme unlocked");
+    notify(result.cost > 0 ? `Theme unlocked · -${result.cost}` : "Theme unlocked by progress");
   }
 
   function handleSelectSkin(skinId) {
@@ -1804,11 +2432,35 @@ function App() {
     }
     unlockAudio();
     playSound("ui", profile.settings.sound);
+    haptic(profile.settings.haptics, 5);
+  }
+
+  async function handleCopyResult() {
+    const copied = await copyResultText(shareText);
+    notify(copied ? "Result copied!" : "Could not copy result");
+    if (copied) haptic(profile.settings.haptics, 8);
+    return copied;
+  }
+
+  async function handleShareResult() {
+    if (!navigator.share) {
+      await handleCopyResult();
+      return;
+    }
+    try {
+      await navigator.share({
+        title: "Block Rush",
+        text: shareText,
+        url: window.location.href,
+      });
+    } catch (error) {
+      if (error?.name !== "AbortError") await handleCopyResult();
+    }
   }
 
   function confirmResetProgress() {
     const nextProfile = createInitialProfile();
-    const nextRun = createRun(Math.random, nextProfile.highScore);
+    const nextRun = createRun(Math.random, nextProfile.bestScore, nextProfile);
     setProfile(nextProfile);
     setRun(nextRun);
     setScreen("menu");
@@ -1818,17 +2470,16 @@ function App() {
     notify("Progress reset");
   }
 
-  const shellStyle = {
-    "--skin-0": selectedSkin.swatches[0],
-    "--skin-1": selectedSkin.swatches[1],
-    "--skin-2": selectedSkin.swatches[2],
-    "--skin-3": selectedSkin.swatches[3],
-  };
+  const shellStyle = getSkinCssVariables(selectedSkin);
+
+  if (showSplash) return <SplashScreen />;
 
   return (
     <div
       className={`app-shell ${shake ? "shake" : ""} ${run.bonus?.active ? "rush-active" : ""}`}
       style={shellStyle}
+      data-skin={selectedSkin.id}
+      data-tone={selectedSkin.tone}
       onClickCapture={handleGlobalButtonClick}
     >
       <div className="phone-frame">
@@ -1836,8 +2487,8 @@ function App() {
           <MainMenu
             run={run}
             profile={profile}
-            onPlay={() => setScreen("game")}
-            onNewGame={startNewGame}
+            onPlay={() => requestPlay(false)}
+            onNewGame={() => requestPlay(true)}
             onShop={() => {
               setReturnScreen("menu");
               setScreen("shop");
@@ -1845,6 +2496,10 @@ function App() {
             onMissions={() => {
               setReturnScreen("menu");
               setScreen("missions");
+            }}
+            onStats={() => {
+              setReturnScreen("menu");
+              setScreen("stats");
             }}
             onSettings={() => openSettingsScreen("menu")}
           />
@@ -1866,7 +2521,7 @@ function App() {
             onBeginDrag={handleBeginDrag}
             onCellAction={handleCellAction}
             onPause={() => setPaused(true)}
-            tutorialActive={!profile.tutorialSeen && run.moves === 0}
+            tutorialActive={false}
           />
         )}
         {screen === "shop" && (
@@ -1886,26 +2541,37 @@ function App() {
             onOpenChest={handleOpenChest}
           />
         )}
+        {screen === "stats" && (
+          <StatsScreen
+            profile={profile}
+            onBack={backFromPanel}
+          />
+        )}
         {screen === "settings" && (
           <SettingsScreen
             profile={profile}
             onBack={backFromPanel}
             onToggleSetting={toggleSetting}
+            onReplayTutorial={replayTutorial}
             onResetProgress={() => setConfirmReset(true)}
-            confirmReset={confirmReset}
-            onConfirmReset={confirmResetProgress}
           />
         )}
         {screen === "gameover" && (
           <GameOverScreen
             run={run}
             profile={profile}
-            onRestart={startNewGame}
+            onRestart={() => requestPlay(true)}
             onMenu={() => setScreen("menu")}
             onShop={() => {
               setReturnScreen("gameover");
               setScreen("shop");
             }}
+            onMissions={() => {
+              setReturnScreen("gameover");
+              setScreen("missions");
+            }}
+            onShare={() => setShareOpen(true)}
+            onCopy={handleCopyResult}
           />
         )}
       </div>
@@ -1916,7 +2582,7 @@ function App() {
           onResume={() => setPaused(false)}
           onRestart={() => {
             setPaused(false);
-            startNewGame();
+            requestPlay(true);
           }}
           onMissions={() => {
             setPaused(false);
@@ -1943,6 +2609,32 @@ function App() {
         />
       )}
       {chestState && <ChestModal state={chestState} onOpen={handleChestReward} onClose={() => setChestState(null)} />}
+      {themeUnlockState && (
+        <ThemeUnlockModal
+          theme={themeUnlockState}
+          onClose={() => setThemeUnlockState(null)}
+        />
+      )}
+      {tutorialIntent && (
+        <TutorialModal
+          skin={selectedSkin}
+          onComplete={completeTutorial}
+        />
+      )}
+      {shareOpen && (
+        <ShareModal
+          text={shareText}
+          onShare={handleShareResult}
+          onCopy={handleCopyResult}
+          onClose={() => setShareOpen(false)}
+        />
+      )}
+      {confirmReset && (
+        <ResetConfirmModal
+          onCancel={() => setConfirmReset(false)}
+          onConfirm={confirmResetProgress}
+        />
+      )}
       <Toast toast={toast} />
     </div>
   );

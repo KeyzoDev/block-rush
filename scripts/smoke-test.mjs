@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import {
   BOARD_SIZE,
   BONUS_STAGE,
@@ -41,6 +42,25 @@ import {
   shouldStartBonusStage,
 } from "../src/game/gameLogic.js";
 import { getDragLift, getPlacementCell } from "../src/game/dragPlacement.js";
+import {
+  DEFAULT_SKIN_ID,
+  SKINS,
+  getSkin,
+  getSkinCssVariables,
+  isSkinId,
+} from "../src/theme/skins.js";
+import {
+  applyProgressEvent,
+  createDailyMissionProgress,
+  finalizeRunProgress,
+  getMissionDefinition,
+  getThemeUnlockStatus,
+  normalizeProgress,
+} from "../src/progression/progression.js";
+import {
+  copyResultText,
+  createResultShareText,
+} from "../src/share/resultShare.js";
 
 const piece = (cells, id = "test") => ({ id, cells, colorIndex: 0, placed: false });
 const filled = { skin: "classic", colorIndex: 0 };
@@ -61,11 +81,141 @@ function seededRng(seed) {
 {
   const profile = createInitialProfile("2026-06-18");
   assert.equal(profile.tutorialSeen, false, "tutorial should be shown for a new player");
+  assert.equal(profile.tutorialCompleted, false, "new players should start with tutorial incomplete");
   assert.equal(
-    normalizeProfile({ ...profile, tutorialSeen: true }, "2026-06-18").tutorialSeen,
+    normalizeProfile({ tutorialSeen: true }, "2026-06-18").tutorialCompleted,
     true,
-    "tutorial completion should persist",
+    "legacy tutorial state should migrate",
   );
+
+  const migrated = normalizeProfile(
+    {
+      ownedSkins: ["neon", "removed-skin", "neon"],
+      selectedSkin: "removed-skin",
+      tutorialSeen: true,
+    },
+    "2026-06-18",
+  );
+  assert.deepEqual(
+    migrated.unlockedThemeIds,
+    [DEFAULT_SKIN_ID, "neon"],
+    "profile migration should remove obsolete and duplicate skin ids",
+  );
+  assert.equal(
+    migrated.selectedThemeId,
+    DEFAULT_SKIN_ID,
+    "profile migration should fall back to the default skin",
+  );
+}
+
+{
+  const text = createResultShareText(
+    {
+      score: 42500,
+      boardClears: 7,
+      bestBoardClearStreak: 3,
+      biggestCombo: 10,
+      bestAtStart: 40000,
+    },
+    { bestScore: 42500 },
+    "Galaxy Rush",
+  );
+  assert.match(text, /42,500/);
+  assert.match(text, /Board Clears: 7/);
+  assert.match(text, /Best Streak: x3/);
+  assert.match(text, /New Best!/);
+  let copiedText = "";
+  assert.equal(
+    await copyResultText(text, { writeText: async (value) => { copiedText = value; } }),
+    true,
+  );
+  assert.equal(copiedText, text);
+  assert.equal(await copyResultText(text, null), false);
+
+  const manifest = JSON.parse(await readFile(new URL("../public/manifest.webmanifest", import.meta.url)));
+  assert.equal(manifest.name, "Block Rush");
+  assert.equal(manifest.display, "standalone");
+  assert.equal(manifest.orientation, "portrait");
+  assert.ok(manifest.icons.some((icon) => icon.sizes === "512x512"));
+}
+
+{
+  assert.equal(getSkin("missing").id, DEFAULT_SKIN_ID, "unknown skins should use the default");
+  assert.equal(isSkinId("galaxy"), true, "registered skin ids should be discoverable");
+  assert.equal(isSkinId("missing"), false, "unknown skin ids should be rejected");
+  for (const skin of SKINS) {
+    const variables = getSkinCssVariables(skin);
+    assert.equal(variables["--skin-0"], skin.swatches[0]);
+    assert.ok(variables["--theme-bg-start"], `${skin.id} should expose background tokens`);
+    assert.ok(variables["--theme-board-start"], `${skin.id} should expose board tokens`);
+    assert.ok(variables["--theme-text"], `${skin.id} should expose readable text tokens`);
+    assert.ok(skin.visual.blockMotif, `${skin.id} should expose a block motif`);
+    assert.ok(skin.visual.boardClear.preset, `${skin.id} should expose Board Clear VFX`);
+    assert.ok(skin.visual.fever.preset, `${skin.id} should expose Fever VFX`);
+    assert.ok(variables["--theme-clear-glow"], `${skin.id} should expose VFX color tokens`);
+  }
+  for (const benchmarkId of ["classic", "watermelon", "galaxy", "gold"]) {
+    assert.equal(getSkin(benchmarkId).visual.benchmark, true, `${benchmarkId} should be a benchmark theme`);
+  }
+}
+
+{
+  const dailyA = createDailyMissionProgress("2026-06-18");
+  const dailyB = createDailyMissionProgress("2026-06-18");
+  const dailyNext = createDailyMissionProgress("2026-06-19");
+  assert.deepEqual(dailyA.ids, dailyB.ids, "daily mission selection should be deterministic");
+  assert.equal(dailyA.ids.length, 3, "daily missions should contain three tasks");
+  assert.notDeepEqual(dailyA.ids, dailyNext.ids, "the next day should refresh the mission set");
+
+  const normalized = normalizeProgress({
+    coins: 350,
+    highScore: 4200,
+    ownedSkins: ["classic", "candy", "missing"],
+    selectedSkin: "candy",
+  }, "2026-06-18");
+  assert.equal(normalized.totalCoins, 350, "legacy coins should migrate");
+  assert.equal(normalized.bestScore, 4200, "legacy best score should migrate");
+  assert.deepEqual(normalized.unlockedThemeIds, ["classic", "candy"]);
+  assert.equal(normalized.selectedThemeId, "candy");
+  assert.deepEqual(
+    normalized.achievements,
+    [],
+    "legacy progress below achievement thresholds should not gain achievements",
+  );
+
+  const migratedHighScore = normalizeProgress({ highScore: 15690 }, "2026-06-18");
+  assert.ok(
+    migratedHighScore.achievements.includes("score-10000"),
+    "legacy high scores should migrate matching achievements without a later gameplay toast",
+  );
+
+  const progressed = applyProgressEvent(normalized, {
+    scoreGain: 6000,
+    currentRunScore: 6000,
+    linesCleared: 4,
+    boardClears: 1,
+    comboEvents: 2,
+    bestCombo: 10,
+    boardClearStreak: 1,
+    feverActivations: 1,
+  }, "2026-06-18");
+  assert.equal(progressed.profile.totalBoardClears, 1);
+  assert.equal(progressed.profile.totalFeverActivations, 1);
+  assert.ok(progressed.profile.achievements.includes("first-clear"));
+  assert.ok(progressed.profile.achievements.includes("combo-master"));
+
+  const candyStatus = getThemeUnlockStatus("candy", {
+    ...progressed.profile,
+    totalBoardClears: 5,
+  });
+  assert.equal(candyStatus.requirementMet, true, "theme progression should unlock by requirement");
+
+  const run = { ...createRun(() => 0.2, 100), score: 5000, startedAt: Date.now() - 60000 };
+  const finalized = finalizeRunProgress(progressed.profile, run);
+  assert.equal(finalized.profile.totalGamesPlayed, progressed.profile.totalGamesPlayed + 1);
+  assert.equal(finalized.run.finalized, true);
+  const repeated = finalizeRunProgress(finalized.profile, finalized.run);
+  assert.equal(repeated.profile.totalGamesPlayed, finalized.profile.totalGamesPlayed, "run finalization should be idempotent");
 }
 
 {
@@ -321,44 +471,45 @@ function seededRng(seed) {
   const profile = createInitialProfile("2026-06-13");
   const result = applyGameProgress(profile, {
     score: reward.score,
+    scoreGain: reward.score,
     coins: reward.coins,
     xp: 900,
     previousLines: 4,
     linesCleared: 6,
     comboEvent: 1,
   }, "2026-06-13");
-  assert.ok(result.profile.coins > profile.coins, "profile coins should update");
+  assert.ok(result.profile.totalCoins > profile.totalCoins, "profile coins should update");
   assert.ok(result.profile.level > profile.level, "level should increase with enough XP");
   assert.ok(result.profile.chestProgress > 0, "chest should gain progress");
-  assert.equal(result.profile.daily.missions.clear20.progress, 6, "mission lines should update");
+  assert.equal(result.profile.totalLinesCleared, 6, "lifetime line stats should update");
+  assert.equal(result.profile.lifetimeScore, reward.score, "lifetime score should use score deltas");
 }
 
 {
-  const profile = createInitialProfile("2026-06-13");
+  const profile = createInitialProfile();
+  const missionId = profile.dailyMissionIds[0];
+  const mission = getMissionDefinition(missionId);
   const ready = {
     ...profile,
-    daily: {
-      ...profile.daily,
-      missions: {
-        ...profile.daily.missions,
-        clear20: { progress: 20, claimed: false },
-      },
+    dailyMissionProgress: {
+      ...profile.dailyMissionProgress,
+      [missionId]: { progress: mission.target, claimed: false },
     },
   };
-  const claimed = claimMission(ready, "clear20");
+  const claimed = claimMission(ready, missionId);
   assert.equal(claimed.claimed, true, "mission should be claimable");
-  assert.ok(claimed.profile.coins > ready.coins, "mission should grant coins");
+  assert.ok(claimed.profile.totalCoins > ready.totalCoins, "mission should grant coins");
 }
 
 {
-  const profile = { ...createInitialProfile("2026-06-13"), coins: 1000 };
+  const profile = { ...createInitialProfile("2026-06-13"), totalCoins: 5000 };
   const purchased = buySkin(profile, "neon");
   assert.equal(purchased.purchased, true, "skin purchase should work");
   assert.equal(selectSkin(purchased.profile, "neon").selected, true, "skin selection should work");
 }
 
 {
-  const profile = { ...createInitialProfile("2026-06-13"), coins: 500 };
+  const profile = { ...createInitialProfile("2026-06-13"), totalCoins: 500 };
   const bought = buyPowerup(profile, "hammer");
   assert.equal(bought.purchased, true, "power-up purchase should work");
   const spent = spendPowerup(bought.profile, "hammer");
@@ -386,6 +537,7 @@ function seededRng(seed) {
   assert.equal(run.bestAtStart, 0, "run should remember the best score at its start");
   assert.equal(run.boardClearPity, 0, "restart should reset Board Clear pity");
   assert.equal(run.boardClears, 0, "restart should reset Board Clear streak");
+  assert.equal(run.feverActivations, 0, "restart should reset Fever activations");
   assert.equal(run.recentShapeIds.length, 3, "restart should seed rolling piece history");
   assert.equal(
     handHasBoardClearPath(run.board, run.pieces, { moves: 0 }),
