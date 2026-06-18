@@ -98,6 +98,7 @@ export const PIECE_SHAPES = [
 
 const AWKWARD_SHAPES = new Set(["box3", "l4-a", "l4-b", "t4", "zig", "step"]);
 const LARGE_SHAPES = new Set(["box3", "line5-h", "line5-v"]);
+const LONG_LINE_SHAPES = new Set(["line4-h", "line4-v", "line5-h", "line5-v"]);
 const LINE_FRIENDLY_SHAPES = new Set([
   "single",
   "duo-h",
@@ -110,12 +111,12 @@ const LINE_FRIENDLY_SHAPES = new Set([
   "line5-v",
 ]);
 const DREAM_SET_IDS = [
-  ["line4-h", "line4-h", "single"],
-  ["line4-v", "line4-v", "single"],
-  ["tri-h", "line5-h", "duo-v"],
-  ["tri-v", "line5-v", "duo-h"],
-  ["tri-h", "tri-h", "duo-h"],
-  ["tri-v", "tri-v", "duo-v"],
+  ["tri-h", "line5-h", "box2"],
+  ["tri-v", "line5-v", "box2"],
+  ["tri-h", "line5-h", "corner-a"],
+  ["tri-v", "line5-v", "corner-b"],
+  ["tri-h", "line5-h", "t4"],
+  ["tri-v", "line5-v", "zig"],
 ];
 
 export const GAME_PHASES = {
@@ -124,6 +125,25 @@ export const GAME_PHASES = {
   pressure: "pressure",
   highScore: "highScore",
 };
+
+export function getPieceCategory(shapeOrId) {
+  const id = typeof shapeOrId === "string" ? shapeOrId : shapeOrId?.id;
+  if (id === "single") return "single";
+  if (id === "duo-h" || id === "duo-v") return "duo";
+  if (id === "tri-h" || id === "tri-v") return "shortLine";
+  if (LONG_LINE_SHAPES.has(id)) return "longLine";
+  if (id === "box2") return "square2";
+  if (id === "box3") return "square3";
+  if (id === "corner-a" || id === "corner-b") return "corner";
+  if (id === "l4-a" || id === "l4-b") return "hook";
+  if (id === "t4") return "tee";
+  if (id === "zig" || id === "step") return "zig";
+  return "other";
+}
+
+function isCompactCategory(category) {
+  return ["square2", "corner", "hook", "tee", "zig"].includes(category);
+}
 
 export function todayKey(date = new Date()) {
   return date.toISOString().slice(0, 10);
@@ -283,13 +303,18 @@ export function getAdaptiveShapeWeight(shape, context = {}) {
     context.boardClearOpportunities?.[shape.id] ??
     getShapeBoardClearOpportunity(context.board, shape);
   let weight = shape.weight;
+  const recentShapeIds = (context.recentShapeIds || []).slice(-12);
+  const category = getPieceCategory(shape);
+  const recentCategories = recentShapeIds.map(getPieceCategory);
+  const categoryRecentCount = recentCategories.filter((item) => item === category).length;
+  const exactRecentCount = recentShapeIds.filter((id) => id === shape.id).length;
 
   if (phase === GAME_PHASES.warmup) {
     if (cellCount <= 3) weight *= 1.75;
     if (cellCount === 4 && !AWKWARD_SHAPES.has(shape.id)) weight *= 1.18;
     if (cellCount >= 5) weight *= 0.28;
     if (AWKWARD_SHAPES.has(shape.id)) weight *= 0.42;
-    if (LINE_FRIENDLY_SHAPES.has(shape.id)) weight *= 1.28;
+    if (LINE_FRIENDLY_SHAPES.has(shape.id)) weight *= 1.08;
   } else if (phase === GAME_PHASES.pressure) {
     if (cellCount >= 4 && fullness < 0.55) weight *= 1.2;
     if (AWKWARD_SHAPES.has(shape.id) && fullness < 0.5) weight *= 1.12;
@@ -320,6 +345,36 @@ export function getAdaptiveShapeWeight(shape, context = {}) {
     weight *= phase === GAME_PHASES.warmup ? 2.15 : struggling ? 1.7 : 1.42;
   }
 
+  if (category === "longLine") weight *= 0.64;
+  if (category === "shortLine") weight *= 0.78;
+  if (category === "square2") weight *= 1.34;
+  if (category === "square3" && fullness < 0.48) weight *= 1.28;
+  if (isCompactCategory(category)) weight *= 1.16;
+
+  if (category === "longLine") {
+    const recentLongLines = recentCategories.filter((item) => item === "longLine").length;
+    if (recentLongLines >= 3) weight *= 0.12;
+    else if (recentLongLines >= 2) weight *= 0.28;
+    else if (recentLongLines >= 1) weight *= 0.62;
+  }
+  if (category === "shortLine" && categoryRecentCount >= 3) weight *= 0.48;
+  if (category === "square2" && !recentCategories.slice(-9).includes("square2")) weight *= 2.35;
+  if (
+    category === "square3" &&
+    fullness < 0.48 &&
+    !recentCategories.slice(-12).includes("square3")
+  ) {
+    weight *= phase === GAME_PHASES.warmup ? 3.2 : 2.35;
+  }
+  if (
+    ["corner", "hook", "tee", "zig"].includes(category) &&
+    !recentCategories.slice(-8).includes(category)
+  ) {
+    weight *= 1.7;
+  }
+  if (categoryRecentCount >= 4) weight *= 0.38;
+  if (exactRecentCount > 0) weight *= 0.42 ** exactRecentCount;
+
   if (shape.id === "single" && hints.single > 0) weight *= 1 + Math.min(2.2, hints.single * 0.7);
   if (shape.id === "duo-h" && hints.duoH > 0) weight *= 1 + Math.min(1.7, hints.duoH * 0.55);
   if (shape.id === "duo-v" && hints.duoV > 0) weight *= 1 + Math.min(1.7, hints.duoV * 0.55);
@@ -329,6 +384,7 @@ export function getAdaptiveShapeWeight(shape, context = {}) {
   if (context.recentAwkward && AWKWARD_SHAPES.has(shape.id)) weight *= 0.42;
   if (context.suppressAwkward && AWKWARD_SHAPES.has(shape.id)) weight *= 0.08;
   if (context.suppressLarge && LARGE_SHAPES.has(shape.id)) weight *= 0.06;
+  if (context.suppressLongLine && LONG_LINE_SHAPES.has(shape.id)) weight *= 0.04;
 
   return Math.max(0.02, weight);
 }
@@ -413,6 +469,17 @@ export function evaluateHandFun(board, shapes, context = {}) {
   const awkwardCount = shapes.filter((shape) => AWKWARD_SHAPES.has(shape.id)).length;
   const largeCount = shapes.filter((shape) => LARGE_SHAPES.has(shape.id)).length;
   const repeatedCount = shapes.length - new Set(shapes.map((shape) => shape.id)).size;
+  const categories = shapes.map(getPieceCategory);
+  const categoryVariety = new Set(categories).size;
+  const longLineCount = categories.filter((category) => category === "longLine").length;
+  const totalLineCount = categories.filter((category) =>
+    category === "shortLine" || category === "longLine"
+  ).length;
+  const compactCount = categories.filter(isCompactCategory).length;
+  const squareCount = categories.filter((category) =>
+    category === "square2" || category === "square3"
+  ).length;
+  const recentCategories = (context.recentShapeIds || []).slice(-12).map(getPieceCategory);
   let states = [{ board, mask: 0, score: 0, boardClear: false }];
 
   for (let depth = 0; depth < 3; depth += 1) {
@@ -442,8 +509,23 @@ export function evaluateHandFun(board, shapes, context = {}) {
   if (best.boardClear) {
     const phaseValue = phase === GAME_PHASES.warmup ? 5200 : phase === GAME_PHASES.normal ? 3500 : 1900;
     score += phaseValue + Math.min(5000, pity * 260);
+    if (compactCount > 0) score += 760;
+    if (squareCount > 0) score += 480;
+    if (totalLineCount >= 3) score -= 1200;
   } else {
     score += pity * 24;
+  }
+  score += categoryVariety * 220;
+  score += compactCount * 180;
+  score += squareCount * 130;
+  if (longLineCount > 1) score -= (longLineCount - 1) * 1200;
+  if (totalLineCount >= 3) score -= 780;
+  if (
+    recentCategories.filter((category) =>
+      category === "shortLine" || category === "longLine"
+    ).length >= 6
+  ) {
+    score -= totalLineCount * 460;
   }
   if (phase === GAME_PHASES.warmup) {
     score -= awkwardCount * 520;
@@ -512,6 +594,7 @@ function pickDirectorShape(pool, rng, options = {}) {
     if (options.recentAwkward && AWKWARD_SHAPES.has(shape.id)) adjusted *= 0.42;
     if (options.suppressAwkward && AWKWARD_SHAPES.has(shape.id)) adjusted *= 0.08;
     if (options.suppressLarge && LARGE_SHAPES.has(shape.id)) adjusted *= 0.06;
+    if (options.suppressLongLine && LONG_LINE_SHAPES.has(shape.id)) adjusted *= 0.04;
     return { shape, weight: Math.max(0.002, adjusted) };
   });
   const total = weighted.reduce((sum, item) => sum + item.weight, 0);
@@ -526,19 +609,27 @@ function pickDirectorShape(pool, rng, options = {}) {
 export function generateHand(rng = Math.random, seed = Date.now(), context = {}) {
   const phase = getGamePhase(context);
   const previousShapeIds = context.previousShapeIds || [];
+  const recentShapeIds = (context.recentShapeIds || previousShapeIds).slice(-12);
   const candidateCount = 30;
   const candidateSets = [];
   const directorPool = createDirectorPool(context);
   const directorCache = new Map();
+  const recentCategories = recentShapeIds.map(getPieceCategory);
+  const recentLongLines = recentCategories.filter((category) => category === "longLine").length;
   const dreamSets = DREAM_SET_IDS
     .map((ids) => ids.map((id) => PIECE_SHAPES.find((shape) => shape.id === id)))
     .filter((shapes) => shapes.every((shape) => shape && shapeCanFit(context.board, shape)));
 
-  if (phase === GAME_PHASES.warmup || (Number(context.boardClearPity) || 0) >= 8) {
+  if (phase === GAME_PHASES.warmup && recentLongLines < 2) {
     candidateSets.push(...dreamSets);
   }
 
-  if (phase === GAME_PHASES.warmup && getBoardFullness(context.board) <= 0.08 && dreamSets.length) {
+  if (
+    phase === GAME_PHASES.warmup &&
+    getBoardFullness(context.board) <= 0.08 &&
+    recentLongLines < 2 &&
+    dreamSets.length
+  ) {
     const selectedDream = dreamSets[Math.floor(rng() * dreamSets.length)];
     return selectedDream.map((shape, slot) => ({
       id: `p-${seed}-${slot}-${Math.floor(rng() * 100000)}`,
@@ -557,11 +648,13 @@ export function generateHand(rng = Math.random, seed = Date.now(), context = {})
     for (let slot = 0; slot < 3; slot += 1) {
       const awkwardCount = shapes.filter((shape) => AWKWARD_SHAPES.has(shape.id)).length;
       const largeCount = shapes.filter((shape) => LARGE_SHAPES.has(shape.id)).length;
+      const longLineCount = shapes.filter((shape) => LONG_LINE_SHAPES.has(shape.id)).length;
       shapes.push(pickDirectorShape(directorPool, rng, {
-        recentAwkward: previousShapeIds.slice(-2).some((id) => AWKWARD_SHAPES.has(id)),
+        recentAwkward: recentShapeIds.slice(-3).some((id) => AWKWARD_SHAPES.has(id)),
         suppressAwkward: awkwardCount >= (phase === GAME_PHASES.warmup ? 1 : 2),
         suppressLarge: largeCount >= (phase === GAME_PHASES.highScore ? 2 : 1),
-        selectedShapeIds: [...previousShapeIds, ...shapes.map((shape) => shape.id)],
+        suppressLongLine: longLineCount >= 1,
+        selectedShapeIds: [...recentShapeIds, ...shapes.map((shape) => shape.id)],
       }));
     }
     candidateSets.push(shapes);
@@ -580,7 +673,12 @@ export function generateHand(rng = Math.random, seed = Date.now(), context = {})
   const ranked = simulationCandidates
     .map(({ shapes }) => ({
       shapes,
-      ...evaluateHandFun(context.board, shapes, { ...context, phase, directorCache }),
+      ...evaluateHandFun(context.board, shapes, {
+        ...context,
+        phase,
+        recentShapeIds,
+        directorCache,
+      }),
     }))
     .sort((a, b) => b.score - a.score);
   const topCount = Math.max(3, Math.ceil(ranked.length * (phase === GAME_PHASES.warmup ? 0.14 : 0.22)));
@@ -648,9 +746,16 @@ export function advanceComboState(currentCombo, currentMisses, lineCount) {
 
 export function createRun(rng = Math.random, bestAtStart = 0) {
   const board = createEmptyBoard();
+  const pieces = generateHand(rng, Date.now(), {
+    board,
+    moves: 0,
+    score: 0,
+    totalLines: 0,
+    recentShapeIds: [],
+  });
   return {
     board,
-    pieces: generateHand(rng, Date.now(), { board, moves: 0, score: 0, totalLines: 0 }),
+    pieces,
     score: 0,
     combo: 0,
     biggestCombo: 0,
@@ -662,6 +767,7 @@ export function createRun(rng = Math.random, bestAtStart = 0) {
     moves: 0,
     boardClearPity: 0,
     boardClears: 0,
+    recentShapeIds: pieces.map((piece) => piece.shapeId).slice(-12),
     isOver: false,
     startedAt: Date.now(),
     bestAtStart: Math.max(0, Number(bestAtStart) || 0),
@@ -1111,6 +1217,9 @@ export function reviveRunFromStorage(rawRun) {
     moves: Number(rawRun.moves) || 0,
     boardClearPity: Math.max(0, Number(rawRun.boardClearPity) || 0),
     boardClears: Math.max(0, Number(rawRun.boardClears) || 0),
+    recentShapeIds: Array.isArray(rawRun.recentShapeIds)
+      ? rawRun.recentShapeIds.filter((id) => typeof id === "string").slice(-12)
+      : rawRun.pieces.map((piece) => piece.shapeId).filter(Boolean).slice(-12),
     isOver: Boolean(rawRun.isOver),
     startedAt: Number(rawRun.startedAt) || Date.now(),
     bestAtStart: Math.max(0, Number(rawRun.bestAtStart) || 0),

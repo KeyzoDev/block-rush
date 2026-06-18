@@ -21,6 +21,7 @@ import {
   getBoardFullness,
   getBoardClearReward,
   getGamePhase,
+  getPieceCategory,
   handHasBoardClearPath,
   getShapeClearOpportunity,
   getShapeBoardClearOpportunity,
@@ -50,6 +51,11 @@ function fill(board, cells) {
     next[row][col] = filled;
   });
   return next;
+}
+
+function seededRng(seed) {
+  let value = seed >>> 0;
+  return () => ((value = (value * 1664525 + 1013904223) >>> 0) / 2 ** 32);
 }
 
 {
@@ -126,6 +132,43 @@ function fill(board, cells) {
     crowdedHand.every((item) => item.shapeId === "single"),
     true,
     "generated pieces should remain usable when only a single cell fits",
+  );
+
+  const random = seededRng(12345);
+  const categoryCounts = {};
+  let recentShapeIds = [];
+  let consecutiveLongLineSets = 0;
+  let maxConsecutiveLongLineSets = 0;
+  for (let set = 0; set < 40; set += 1) {
+    const hand = generateHand(random, set, {
+      board: empty,
+      moves: Math.min(set * 3, 100),
+      score: set * 300,
+      totalLines: set,
+      boardClearPity: set % 17,
+      recentShapeIds,
+    });
+    const categories = hand.map((item) => getPieceCategory(item.shapeId));
+    categories.forEach((category) => {
+      categoryCounts[category] = (categoryCounts[category] || 0) + 1;
+    });
+    consecutiveLongLineSets = categories.includes("longLine")
+      ? consecutiveLongLineSets + 1
+      : 0;
+    maxConsecutiveLongLineSets = Math.max(
+      maxConsecutiveLongLineSets,
+      consecutiveLongLineSets,
+    );
+    recentShapeIds = [...recentShapeIds, ...hand.map((item) => item.shapeId)].slice(-12);
+  }
+  const lineRate =
+    ((categoryCounts.shortLine || 0) + (categoryCounts.longLine || 0)) / 120;
+  assert.ok(lineRate < 0.35, "rolling bag should prevent line pieces from dominating");
+  assert.ok((categoryCounts.square2 || 0) >= 8, "2x2 squares should appear regularly");
+  assert.ok((categoryCounts.square3 || 0) >= 2, "3x3 squares should appear occasionally");
+  assert.ok(
+    maxConsecutiveLongLineSets <= 2,
+    "long lines should not appear in more than two consecutive sets",
   );
 }
 
@@ -343,6 +386,7 @@ function fill(board, cells) {
   assert.equal(run.bestAtStart, 0, "run should remember the best score at its start");
   assert.equal(run.boardClearPity, 0, "restart should reset Board Clear pity");
   assert.equal(run.boardClears, 0, "restart should reset Board Clear streak");
+  assert.equal(run.recentShapeIds.length, 3, "restart should seed rolling piece history");
   assert.equal(
     handHasBoardClearPath(run.board, run.pieces, { moves: 0 }),
     true,

@@ -1306,6 +1306,7 @@ function App() {
           combo: baseRun.combo,
           comboMisses: baseRun.comboMisses,
           boardClearPity: baseRun.boardClearPity,
+          recentShapeIds: baseRun.recentShapeIds,
           previousShapeIds: piecesAfterPlacement.map((piece) => piece.shapeId),
         })
       : piecesAfterPlacement;
@@ -1320,6 +1321,9 @@ function App() {
       ...baseRun,
       board: boardAfterClear,
       pieces: nextPieces,
+      recentShapeIds: refreshedHand
+        ? [...(baseRun.recentShapeIds || []), ...generatedPieces.map((piece) => piece.shapeId)].slice(-12)
+        : baseRun.recentShapeIds,
       boardClearPity: offeredBoardClear ? 0 : baseRun.boardClearPity,
       isOver,
     };
@@ -1649,6 +1653,8 @@ function App() {
         totalLines: run.totalLines,
         combo: run.combo,
         comboMisses: run.comboMisses,
+        boardClearPity: run.boardClearPity,
+        recentShapeIds: run.recentShapeIds,
         previousShapeIds: run.pieces.filter((piece) => !piece.placed).map((piece) => piece.shapeId),
       });
       let nextIndex = 0;
@@ -1658,7 +1664,12 @@ function App() {
         nextIndex += 1;
         return nextPiece;
       }), run.bonus);
-      const nextRun = { ...run, pieces, isOver: !canAnyPieceFit(run.board, pieces) };
+      const nextRun = {
+        ...run,
+        pieces,
+        recentShapeIds: [...(run.recentShapeIds || []), ...fresh.map((piece) => piece.shapeId)].slice(-12),
+        isOver: !canAnyPieceFit(run.board, pieces),
+      };
       setProfile(spent.profile);
       setRun(nextRun);
       playSound("reward", profile.settings.sound);
