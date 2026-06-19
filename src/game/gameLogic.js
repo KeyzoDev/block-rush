@@ -17,6 +17,10 @@ export { SKINS, getSkin };
 export const BOARD_SIZE = 8;
 export const CHEST_MAX = 8;
 export const COMBO_MISS_LIMIT = 3;
+export const EARLY_BOARD_CLEAR_ASSIST = {
+  moveLimit: 40,
+  maxUses: 3,
+};
 
 export const BONUS_STAGE = {
   scoreMultiplier: 3,
@@ -271,6 +275,23 @@ export function getShapeBoardClearOpportunity(board, shape) {
   return analyzeShapeOpportunity(board, shape).boardClear;
 }
 
+export function getBoardClearAssistLevel(context = {}) {
+  const moves = Math.max(0, Number(context.moves) || 0);
+  const assistedUses = Math.max(
+    0,
+    Number(context.earlyAssistedBoardClearsUsed) ||
+      Math.min(EARLY_BOARD_CLEAR_ASSIST.maxUses, Number(context.boardClearsThisRun) || 0),
+  );
+  if (
+    moves < EARLY_BOARD_CLEAR_ASSIST.moveLimit &&
+    assistedUses < EARLY_BOARD_CLEAR_ASSIST.maxUses
+  ) {
+    return 1;
+  }
+  if (moves < EARLY_BOARD_CLEAR_ASSIST.moveLimit) return 0.12;
+  return 0.32;
+}
+
 export function getAdaptiveShapeWeight(shape, context = {}) {
   const fullness = getBoardFullness(context.board);
   const moves = Math.max(0, Number(context.moves) || 0);
@@ -285,6 +306,7 @@ export function getAdaptiveShapeWeight(shape, context = {}) {
   const boardClearOpportunity =
     context.boardClearOpportunities?.[shape.id] ??
     getShapeBoardClearOpportunity(context.board, shape);
+  const boardClearAssistLevel = getBoardClearAssistLevel(context);
   let weight = shape.weight;
   const recentShapeIds = (context.recentShapeIds || []).slice(-12);
   const category = getPieceCategory(shape);
@@ -328,7 +350,8 @@ export function getAdaptiveShapeWeight(shape, context = {}) {
     weight *= assistance + Math.min(0.55, clearOpportunity * 0.22);
   }
   if (boardClearOpportunity) {
-    weight *= phase === GAME_PHASES.warmup ? 2.15 : struggling ? 1.7 : 1.42;
+    const assistedMultiplier = phase === GAME_PHASES.warmup ? 2.15 : struggling ? 1.7 : 1.42;
+    weight *= 1 + (assistedMultiplier - 1) * boardClearAssistLevel;
   }
 
   if (category === "longLine") weight *= 0.9;
@@ -524,8 +547,10 @@ function analyzeBoardStructure(board) {
   };
 }
 
-function getPlacementOutcomes(board, shape, limit = 3, cache) {
-  const cacheKey = cache ? `${shape.id}:${boardOccupancyKey(board)}` : "";
+function getPlacementOutcomes(board, shape, limit = 3, cache, boardClearAssistLevel = 1) {
+  const cacheKey = cache
+    ? `${shape.id}:${boardClearAssistLevel.toFixed(2)}:${boardOccupancyKey(board)}`
+    : "";
   if (cache?.has(cacheKey)) return cache.get(cacheKey);
   const piece = { cells: shape.cells, placed: false };
   const beforeFilled = board.flat().filter(Boolean).length;
@@ -554,7 +579,7 @@ function getPlacementOutcomes(board, shape, limit = 3, cache) {
           fullnessReduction * 7 +
           structureGain * 1.4 +
           Math.max(0, nextStructure.nearClearLines - beforeStructure.nearClearLines) * 55 +
-          (boardClear ? 4200 : 0),
+          (boardClear ? 4200 * (0.12 + boardClearAssistLevel * 0.88) : 0),
       });
     }
   }
@@ -571,6 +596,7 @@ export function evaluateHandFun(board, shapes, context = {}) {
 
   const phase = context.phase || getGamePhase(context);
   const pity = Math.max(0, Number(context.boardClearPity) || 0);
+  const boardClearAssistLevel = getBoardClearAssistLevel(context);
   const awkwardCount = shapes.filter((shape) => AWKWARD_SHAPES.has(shape.id)).length;
   const largeCount = shapes.filter((shape) => LARGE_SHAPES.has(shape.id)).length;
   const repeatedCount = shapes.length - new Set(shapes.map((shape) => shape.id)).size;
@@ -596,7 +622,13 @@ export function evaluateHandFun(board, shapes, context = {}) {
     for (const state of states) {
       for (let index = 0; index < shapes.length; index += 1) {
         if (state.mask & (1 << index)) continue;
-        const outcomes = getPlacementOutcomes(state.board, shapes[index], 3, context.directorCache);
+        const outcomes = getPlacementOutcomes(
+          state.board,
+          shapes[index],
+          3,
+          context.directorCache,
+          boardClearAssistLevel,
+        );
         for (const outcome of outcomes) {
           nextStates.push({
             board: outcome.board,
@@ -617,7 +649,9 @@ export function evaluateHandFun(board, shapes, context = {}) {
   let score = best.score;
   if (best.boardClear) {
     const phaseValue = phase === GAME_PHASES.warmup ? 5200 : phase === GAME_PHASES.normal ? 3500 : 1900;
-    score += phaseValue + Math.min(5000, pity * 260);
+    score +=
+      phaseValue * (0.16 + boardClearAssistLevel * 0.84) +
+      Math.min(5000, pity * 260) * (0.18 + boardClearAssistLevel * 0.82);
     if (compactCount > 0) score += 760;
     if (squareCount > 0) score += 480;
     if (rectangleCount > 0) score += 80;
@@ -740,12 +774,15 @@ export function generateHand(rng = Math.random, seed = Date.now(), context = {})
   const recentLongLines = recentCategories.filter((category) => category === "longLine").length;
   const recentTinyPieces = recentShapeIds.filter((id) => TINY_SHAPES.has(id)).length;
   const fullness = getBoardFullness(context.board);
+  const boardClearAssistLevel = getBoardClearAssistLevel(context);
+  const strongBoardClearAssist = boardClearAssistLevel >= 0.8;
   const dreamSets = DREAM_SET_IDS
     .map((ids) => ids.map((id) => PIECE_SHAPES.find((shape) => shape.id === id)))
     .filter((shapes) => shapes.every((shape) => shape && shapeCanFit(context.board, shape)));
 
   if (
     phase === GAME_PHASES.warmup &&
+    strongBoardClearAssist &&
     recentLongLines < 2 &&
     (Number(context.boardClearPity) || 0) >= 5
   ) {
@@ -754,6 +791,7 @@ export function generateHand(rng = Math.random, seed = Date.now(), context = {})
 
   if (
     phase === GAME_PHASES.warmup &&
+    strongBoardClearAssist &&
     getBoardFullness(context.board) <= 0.08 &&
     recentLongLines < 2 &&
     dreamSets.length
@@ -905,6 +943,8 @@ export function createRun(rng = Math.random, bestAtStart = 0, progressAtStart = 
     moves: 0,
     boardClearPity: 0,
     boardClears: 0,
+    boardClearsThisRun: 0,
+    earlyAssistedBoardClearsUsed: 0,
     boardClearStreak: 0,
     bestBoardClearStreak: 0,
     feverActivations: 0,
@@ -1318,6 +1358,20 @@ export function reviveRunFromStorage(rawRun) {
     moves: Number(rawRun.moves) || 0,
     boardClearPity: Math.max(0, Number(rawRun.boardClearPity) || 0),
     boardClears: Math.max(0, Number(rawRun.boardClears) || 0),
+    boardClearsThisRun: Math.max(
+      0,
+      Number(rawRun.boardClearsThisRun) || Number(rawRun.boardClears) || 0,
+    ),
+    earlyAssistedBoardClearsUsed: Math.min(
+      EARLY_BOARD_CLEAR_ASSIST.maxUses,
+      Math.max(
+        0,
+        Number(rawRun.earlyAssistedBoardClearsUsed) ||
+          Number(rawRun.boardClearsThisRun) ||
+          Number(rawRun.boardClears) ||
+          0,
+      ),
+    ),
     boardClearStreak: Math.max(
       0,
       Number(rawRun.boardClearStreak) || Number(rawRun.boardClears) || 0,

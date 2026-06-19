@@ -38,6 +38,7 @@ import {
   BOARD_SIZE,
   BONUS_STAGE,
   CHEST_MAX,
+  EARLY_BOARD_CLEAR_ASSIST,
   POWERUPS,
   STORAGE_KEYS,
   advanceBonusStage,
@@ -109,6 +110,54 @@ let audioContext;
 let audioMaster;
 let musicNodes;
 let lastVoiceAt = 0;
+let voiceManifestPromise;
+let voiceClips = new Map();
+let activeVoiceAudio;
+
+function voiceKey(label) {
+  return String(label || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_|_$/g, "");
+}
+
+async function preloadVoiceClips() {
+  if (voiceManifestPromise) return voiceManifestPromise;
+  voiceManifestPromise = fetch("/audio/voice/voice-manifest.json", { cache: "force-cache" })
+    .then((response) => (response.ok ? response.json() : {}))
+    .then((manifest) => {
+      voiceClips = new Map(
+        Object.entries(manifest || {}).map(([key, files]) => [
+          key,
+          (Array.isArray(files) ? files : [])
+            .filter((file) => typeof file === "string" && file)
+            .map((file) => {
+              const audio = new Audio(`/audio/voice/${file}`);
+              audio.preload = "auto";
+              audio.volume = 0.74;
+              return audio;
+            }),
+        ]),
+      );
+      return voiceClips;
+    })
+    .catch(() => new Map());
+  return voiceManifestPromise;
+}
+
+function playRecordedVoice(label, force = false) {
+  const clips = voiceClips.get(voiceKey(label));
+  if (!clips?.length) return false;
+  const clip = clips[Math.floor(Math.random() * clips.length)];
+  if (force && activeVoiceAudio && activeVoiceAudio !== clip) {
+    activeVoiceAudio.pause();
+    activeVoiceAudio.currentTime = 0;
+  }
+  activeVoiceAudio = clip;
+  clip.currentTime = 0;
+  clip.play().catch(() => {});
+  return true;
+}
 
 function readJson(key) {
   try {
@@ -310,26 +359,26 @@ function playSound(kind, enabled, detail = {}) {
     if (kind === "boardClear") {
       scheduleTone(context, output, {
         frequency: 104,
-        endFrequency: 52,
+        endFrequency: 44,
         start: now,
-        duration: 0.3,
-        volume: 0.075,
+        duration: 0.38,
+        volume: 0.085,
         type: "triangle",
       });
-      [523.25, 659.25, 783.99, 1046.5, 1318.51].forEach((frequency, index) => {
+      [523.25, 659.25, 783.99, 1046.5, 1318.51, 1567.98].forEach((frequency, index) => {
         scheduleTone(context, output, {
           frequency,
           endFrequency: frequency * 1.12,
           start: now + 0.035 + index * 0.055,
-          duration: 0.3,
-          volume: index === 4 ? 0.038 : 0.05,
+          duration: 0.34,
+          volume: index >= 4 ? 0.04 : 0.055,
           type: index % 2 ? "triangle" : "sine",
         });
       });
       scheduleNoise(context, output, {
         start: now + 0.04,
-        duration: 0.24,
-        volume: 0.042,
+        duration: 0.3,
+        volume: 0.05,
         frequency: 4100,
       });
       return;
@@ -389,8 +438,6 @@ function speakPraise(label, enabled, intensity = 1, force = false) {
   if (
     !enabled ||
     typeof window === "undefined" ||
-    !window.speechSynthesis ||
-    typeof window.SpeechSynthesisUtterance !== "function" ||
     document.hidden
   ) {
     return;
@@ -399,6 +446,11 @@ function speakPraise(label, enabled, intensity = 1, force = false) {
   const now = Date.now();
   if (!force && now - lastVoiceAt < 1700) return;
   lastVoiceAt = now;
+  if (playRecordedVoice(label, force)) {
+    window.speechSynthesis?.cancel();
+    return;
+  }
+  if (!window.speechSynthesis || typeof window.SpeechSynthesisUtterance !== "function") return;
 
   try {
     const utterance = new window.SpeechSynthesisUtterance(
@@ -406,12 +458,16 @@ function speakPraise(label, enabled, intensity = 1, force = false) {
     );
     const voices = window.speechSynthesis.getVoices();
     utterance.voice =
+      voices.find((voice) =>
+        /samantha|karen|daniel|moira|google us english/i.test(voice.name) &&
+        /^en/i.test(voice.lang)
+      ) ||
       voices.find((voice) => /^en(-|_)(US|GB)/i.test(voice.lang) && voice.localService) ||
       voices.find((voice) => /^en/i.test(voice.lang)) ||
       null;
-    utterance.volume = 0.72;
-    utterance.rate = intensity >= 4 ? 1.02 : 1.08;
-    utterance.pitch = Math.min(1.32, 1.08 + intensity * 0.045);
+    utterance.volume = 0.7;
+    utterance.rate = intensity >= 4 ? 1.12 : 1.2;
+    utterance.pitch = Math.min(1.26, 1.08 + intensity * 0.035);
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(utterance);
   } catch {
@@ -715,13 +771,13 @@ function BoardClearFX({ reward, skin }) {
       <i className="clear-ring ring-two" />
       <i className="clear-theme-sweep" />
       <div className="clear-fragments">
-        {Array.from({ length: 16 + intensity * 3 }, (_, index) => (
+        {Array.from({ length: 24 + intensity * 4 }, (_, index) => (
           <i
             key={index}
             className={`clear-fragment fragment-${skin.visual.boardClear.fragments}`}
             style={{
               "--fragment-index": index,
-              "--fragment-angle": `${(360 / (16 + intensity * 3)) * index}deg`,
+              "--fragment-angle": `${(360 / (24 + intensity * 4)) * index}deg`,
               "--fragment-distance": `${92 + (index % 5) * 18}px`,
               "--fragment-delay": `${(index % 6) * 18}ms`,
             }}
@@ -822,7 +878,7 @@ function GameScreen({
         {boardClear && <BoardClearFX reward={boardClear} skin={skin} />}
         {lastReward && (
           <div
-            className="reward-burst"
+              className={`reward-burst ${lastReward.boardClear ? "jackpot" : ""}`}
             style={{ left: `${lastReward.left}%`, top: `${lastReward.top}%` }}
             aria-live="polite"
           >
@@ -831,7 +887,9 @@ function GameScreen({
         )}
         {boardClear && (
           <div
-            className={`board-clear-flash preset-${skin.visual.boardClear.preset}`}
+            className={`board-clear-flash preset-${skin.visual.boardClear.preset} intensity-${
+              boardClear.streak >= 5 ? 4 : boardClear.streak >= 3 ? 3 : boardClear.streak >= 2 ? 2 : 1
+            }`}
             role="status"
             aria-live="assertive"
           >
@@ -1901,6 +1959,7 @@ function App() {
     audioUnlockedRef.current = true;
     setAudioUnlocked(true);
     if (audioContext?.state === "suspended") audioContext.resume();
+    void preloadVoiceClips();
   }
 
   function notify(message) {
@@ -1945,21 +2004,21 @@ function App() {
     window.setTimeout(() => setParticles([]), duration);
   }
 
-  function flashPraise(label, combo, lineCount) {
+  function flashPraise(label, combo, lineCount, allowVoice = true) {
     if (!label) return;
     setPraiseFlash({ label, combo });
     window.clearTimeout(praiseTimer.current);
     praiseTimer.current = window.setTimeout(() => setPraiseFlash(null), 900);
     const intensity = Math.max(lineCount, combo);
-    if (intensity >= 2) {
+    if (allowVoice && intensity >= 2) {
       speakPraise(label, profile.settings.voice && audioUnlockedRef.current, intensity);
     }
   }
 
-  function triggerShake(strong = false) {
-    setShake(true);
-    haptic(profile.settings.haptics, strong ? [28, 30, 28] : 24);
-    window.setTimeout(() => setShake(false), strong ? 380 : 260);
+  function triggerShake(strong = false, jackpot = false) {
+    setShake(jackpot ? "jackpot" : "normal");
+    haptic(profile.settings.haptics, jackpot ? [36, 34, 42, 28, 36] : strong ? [28, 30, 28] : 24);
+    window.setTimeout(() => setShake(false), jackpot ? 480 : strong ? 380 : 260);
   }
 
   function finalizeRunAfterMove(baseRun, boardAfterClear, piecesAfterPlacement, progressProfile = profile) {
@@ -1973,6 +2032,8 @@ function App() {
           combo: baseRun.combo,
           comboMisses: baseRun.comboMisses,
           boardClearPity: baseRun.boardClearPity,
+          boardClearsThisRun: baseRun.boardClearsThisRun,
+          earlyAssistedBoardClearsUsed: baseRun.earlyAssistedBoardClearsUsed,
           recentShapeIds: baseRun.recentShapeIds,
           previousShapeIds: piecesAfterPlacement.map((piece) => piece.shapeId),
         })
@@ -1982,6 +2043,8 @@ function App() {
       moves: baseRun.moves,
       score: baseRun.score,
       totalLines: baseRun.totalLines,
+      boardClearsThisRun: baseRun.boardClearsThisRun,
+      earlyAssistedBoardClearsUsed: baseRun.earlyAssistedBoardClearsUsed,
     });
     const isOver = !canAnyPieceFit(boardAfterClear, nextPieces);
     let finalRun = {
@@ -2002,6 +2065,9 @@ function App() {
         finalRun.score > (finalRun.bestAtStart || 0) ? "newBest" : "gameOver",
         profile.settings.sound,
       );
+      if (finalRun.score > (finalRun.bestAtStart || 0)) {
+        speakPraise("NEW BEST!", profile.settings.voice && audioUnlockedRef.current, 5, true);
+      }
       window.clearTimeout(gameOverTimer.current);
       gameOverTimer.current = window.setTimeout(() => setScreen("gameover"), 520);
     }
@@ -2041,6 +2107,15 @@ function App() {
     const comboAfterMove = comboState.combo;
     const boardClear = Boolean(cleared && isBoardEmpty(cleared.board));
     const boardClearStreak = (run.boardClears || 0) + (boardClear ? 1 : 0);
+    const boardClearsThisRun =
+      (run.boardClearsThisRun ?? run.boardClears ?? 0) + (boardClear ? 1 : 0);
+    const earlyAssistedBoardClearsUsed =
+      boardClear && run.moves + 1 <= EARLY_BOARD_CLEAR_ASSIST.moveLimit
+        ? Math.min(
+            EARLY_BOARD_CLEAR_ASSIST.maxUses,
+            (run.earlyAssistedBoardClearsUsed || 0) + 1,
+          )
+        : run.earlyAssistedBoardClearsUsed || 0;
     const boardClearReward = boardClear
       ? getBoardClearReward(
           comboAfterMove,
@@ -2097,6 +2172,8 @@ function App() {
       moves: run.moves + 1,
       boardClearPity: boardClear ? 0 : (run.boardClearPity || 0) + 1,
       boardClears: boardClearStreak,
+      boardClearsThisRun,
+      earlyAssistedBoardClearsUsed,
       boardClearStreak,
       bestBoardClearStreak: Math.max(run.bestBoardClearStreak || 0, boardClearStreak),
       feverActivations: (run.feverActivations || 0) + (bonusTriggered ? 1 : 0),
@@ -2123,6 +2200,7 @@ function App() {
     if (bonusTriggered) {
       notify(`Rush Bonus x${BONUS_STAGE.scoreMultiplier}`);
       playSound("reward", profile.settings.sound);
+      speakPraise("FEVER!", profile.settings.voice && audioUnlockedRef.current, 4);
     }
     if (profile.chestProgress < CHEST_MAX && progress.profile.chestProgress >= CHEST_MAX) {
       notify("Chest ready");
@@ -2174,11 +2252,12 @@ function App() {
         score: reward.score + boardClearReward.score,
         coins: earnedCoins,
         lines: completed.count,
+        boardClear,
         left: ((rewardCenter.col + 0.5) / BOARD_SIZE) * 100,
         top: ((rewardCenter.row + 0.5) / BOARD_SIZE) * 100,
       });
       addParticles(
-        boardClear ? 44 : Math.min(42, 14 + completed.count * 10 + comboAfterMove * 4),
+        boardClear ? 64 : Math.min(48, 16 + completed.count * 11 + comboAfterMove * 5),
         boardClear ? [[3.5, 3.5]] : cleared.clearedCells,
         boardClear
           ? {
@@ -2186,24 +2265,29 @@ function App() {
               colors: selectedSkin.visual.particle.colors,
             }
           : selectedSkin.visual.particle,
-        boardClear ? 1350 : 760,
+        boardClear ? 1600 : 820,
       );
       if (boardClear) {
         setBoardClearFlash({ ...boardClearReward, streak: boardClearStreak });
         window.clearTimeout(boardClearTimer.current);
-        boardClearTimer.current = window.setTimeout(() => setBoardClearFlash(null), 1450);
+        boardClearTimer.current = window.setTimeout(() => setBoardClearFlash(null), 1650);
         window.clearTimeout(praiseTimer.current);
         setPraiseFlash(null);
-        speakPraise("BOARD CLEAR!", profile.settings.voice && audioUnlockedRef.current, 6, true);
+        speakPraise(
+          boardClearStreak >= 3 ? "UNBELIEVABLE!" : "BOARD CLEAR!",
+          profile.settings.voice && audioUnlockedRef.current,
+          6,
+          true,
+        );
       } else {
-        flashPraise(praise, comboAfterMove, completed.count);
+        flashPraise(praise, comboAfterMove, completed.count, !bonusTriggered);
       }
-      triggerShake(boardClear || completed.count > 1 || comboAfterMove >= 2);
+      triggerShake(boardClear || completed.count > 1 || comboAfterMove >= 2, boardClear);
       window.setTimeout(() => {
         setClearMarks([]);
         finalizeRunAfterMove(baseRun, cleared.board, piecesAfterPlacement, progress.profile);
         setClearing(false);
-      }, boardClear ? 1050 : 470);
+      }, boardClear ? 1280 : 500);
     } else {
       haptic(profile.settings.haptics, 8);
       addParticles(
@@ -2403,6 +2487,8 @@ function App() {
         combo: run.combo,
         comboMisses: run.comboMisses,
         boardClearPity: run.boardClearPity,
+        boardClearsThisRun: run.boardClearsThisRun,
+        earlyAssistedBoardClearsUsed: run.earlyAssistedBoardClearsUsed,
         recentShapeIds: run.recentShapeIds,
         previousShapeIds: run.pieces.filter((piece) => !piece.placed).map((piece) => piece.shapeId),
       });
@@ -2636,7 +2722,7 @@ function App() {
 
   return (
     <div
-      className={`app-shell ${shake ? "shake" : ""} ${run.bonus?.active ? "rush-active" : ""}`}
+      className={`app-shell ${shake ? "shake" : ""} ${shake === "jackpot" ? "shake-jackpot" : ""} ${run.bonus?.active ? "rush-active" : ""}`}
       style={shellStyle}
       data-skin={selectedSkin.id}
       data-tone={selectedSkin.tone}

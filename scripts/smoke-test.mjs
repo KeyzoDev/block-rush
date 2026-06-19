@@ -4,6 +4,7 @@ import {
   BOARD_SIZE,
   BONUS_STAGE,
   CHEST_MAX,
+  EARLY_BOARD_CLEAR_ASSIST,
   PIECE_SHAPES,
   advanceBonusStage,
   advanceComboState,
@@ -21,6 +22,7 @@ import {
   getAdaptiveShapeWeight,
   getBoardFullness,
   getBoardClearReward,
+  getBoardClearAssistLevel,
   getGamePhase,
   getPieceCategory,
   handHasBoardClearPath,
@@ -29,6 +31,7 @@ import {
   GAME_PHASES,
   isBoardEmpty,
   generateHand,
+  evaluateHandFun,
   applyGameProgress,
   claimMission,
   buySkin,
@@ -155,6 +158,13 @@ function seededRng(seed) {
   const serviceWorker = await readFile(new URL("../public/sw.js", import.meta.url), "utf8");
   assert.match(serviceWorker, /icon-maskable-512\.png/);
   assert.match(serviceWorker, /block-rush-logo\.webp/);
+  assert.match(serviceWorker, /voice-manifest\.json/);
+
+  const voiceManifest = JSON.parse(
+    await readFile(new URL("../public/audio/voice/voice-manifest.json", import.meta.url)),
+  );
+  assert.ok(Array.isArray(voiceManifest.board_clear));
+  assert.ok(Array.isArray(voiceManifest.fever));
 }
 
 {
@@ -274,6 +284,50 @@ function seededRng(seed) {
     getShapeBoardClearOpportunity(nearClear, duoH),
     true,
     "generator should recognize a piece that can create a complete board clear",
+  );
+  assert.equal(
+    getBoardClearAssistLevel({ moves: 12, earlyAssistedBoardClearsUsed: 0 }),
+    1,
+    "early Board Clear assist should start strong",
+  );
+  assert.equal(
+    getBoardClearAssistLevel({
+      moves: 12,
+      earlyAssistedBoardClearsUsed: EARLY_BOARD_CLEAR_ASSIST.maxUses,
+    }),
+    0.12,
+    "early Board Clear assist should be sharply reduced after three assisted clears",
+  );
+  assert.equal(
+    getBoardClearAssistLevel({ moves: 50, earlyAssistedBoardClearsUsed: 1 }),
+    0.32,
+    "Board Clear assist should remain subtle after the warm-up phase",
+  );
+  const assistedHand = [duoH, PIECE_SHAPES.find((shape) => shape.id === "box2"), PIECE_SHAPES.find((shape) => shape.id === "t4")];
+  const earlyBoardClearScore = evaluateHandFun(nearClear, assistedHand, {
+    moves: 12,
+    earlyAssistedBoardClearsUsed: 0,
+  }).score;
+  const cappedBoardClearScore = evaluateHandFun(nearClear, assistedHand, {
+    moves: 12,
+    earlyAssistedBoardClearsUsed: EARLY_BOARD_CLEAR_ASSIST.maxUses,
+  }).score;
+  assert.ok(
+    earlyBoardClearScore > cappedBoardClearScore + 3000,
+    "director should stop heavily prioritizing perfect Board Clear hands after the cap",
+  );
+  assert.ok(
+    getAdaptiveShapeWeight(duoH, {
+      board: nearClear,
+      moves: 12,
+      earlyAssistedBoardClearsUsed: EARLY_BOARD_CLEAR_ASSIST.maxUses,
+    }) >
+      getAdaptiveShapeWeight(duoH, {
+        board: createEmptyBoard(),
+        moves: 12,
+        earlyAssistedBoardClearsUsed: EARLY_BOARD_CLEAR_ASSIST.maxUses,
+      }),
+    "combo and line-clear assistance should stay active after Board Clear assistance is capped",
   );
   assert.equal(
     handHasBoardClearPath(nearClear, [
@@ -575,6 +629,8 @@ function seededRng(seed) {
   assert.equal(run.bestAtStart, 0, "run should remember the best score at its start");
   assert.equal(run.boardClearPity, 0, "restart should reset Board Clear pity");
   assert.equal(run.boardClears, 0, "restart should reset Board Clear streak");
+  assert.equal(run.boardClearsThisRun, 0, "restart should reset run Board Clears");
+  assert.equal(run.earlyAssistedBoardClearsUsed, 0, "restart should reset assisted Board Clear usage");
   assert.equal(run.feverActivations, 0, "restart should reset Fever activations");
   assert.equal(run.recentShapeIds.length, 3, "restart should seed rolling piece history");
   assert.equal(
