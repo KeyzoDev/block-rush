@@ -1,7 +1,8 @@
-const CACHE_NAME = "block-rush-v2";
+const CACHE_NAME = "block-rush-v3";
 const APP_SHELL = [
   "/",
   "/manifest.webmanifest",
+  "/audio/voice/voice-manifest.json",
   "/brand/block-rush-logo.webp",
   "/icons/favicon-32.png",
   "/icons/favicon-48.png",
