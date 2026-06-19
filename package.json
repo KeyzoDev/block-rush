@@ -10,6 +10,8 @@
     "test": "node scripts/smoke-test.mjs"
   },
   "dependencies": {
+    "@fontsource/fredoka": "^5.2.10",
+    "@fontsource/nunito": "^5.2.7",
     "@vitejs/plugin-react": "^6.0.2",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",

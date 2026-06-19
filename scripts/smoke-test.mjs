@@ -134,9 +134,27 @@ function seededRng(seed) {
 
   const manifest = JSON.parse(await readFile(new URL("../public/manifest.webmanifest", import.meta.url)));
   assert.equal(manifest.name, "Block Rush");
+  assert.equal(manifest.short_name, "Block Rush");
+  assert.equal(manifest.id, "/");
+  assert.equal(manifest.start_url, "/");
+  assert.equal(manifest.scope, "/");
   assert.equal(manifest.display, "standalone");
   assert.equal(manifest.orientation, "portrait");
   assert.ok(manifest.icons.some((icon) => icon.sizes === "512x512"));
+  assert.ok(
+    manifest.icons.some((icon) => icon.sizes === "512x512" && icon.purpose === "maskable"),
+    "manifest should include a maskable Android icon",
+  );
+
+  const indexHtml = await readFile(new URL("../index.html", import.meta.url), "utf8");
+  assert.match(indexHtml, /manifest\.webmanifest/);
+  assert.match(indexHtml, /favicon-32\.png/);
+  assert.match(indexHtml, /apple-touch-icon\.png/);
+  assert.match(indexHtml, /block-rush-logo\.webp/);
+
+  const serviceWorker = await readFile(new URL("../public/sw.js", import.meta.url), "utf8");
+  assert.match(serviceWorker, /icon-maskable-512\.png/);
+  assert.match(serviceWorker, /block-rush-logo\.webp/);
 }
 
 {
@@ -272,9 +290,9 @@ function seededRng(seed) {
     "warm-up generation should favor useful clear opportunities",
   );
   assert.ok(
-    getAdaptiveShapeWeight(bigShape, { board: empty, moves: 2 }) <
-      getAdaptiveShapeWeight(bigShape, { board: empty, moves: 70 }),
-    "early game should suppress large awkward pieces",
+    getAdaptiveShapeWeight(bigShape, { board: empty, moves: 2 }) >
+      getAdaptiveShapeWeight(bigShape, { board: crowded, moves: 20 }),
+    "3x3 should be encouraged only while the board has reasonable open space",
   );
 
   const crowdedHand = generateHand(() => 0.5, 123, { board: crowded, moves: 20 });
@@ -289,6 +307,7 @@ function seededRng(seed) {
   let recentShapeIds = [];
   let consecutiveLongLineSets = 0;
   let maxConsecutiveLongLineSets = 0;
+  let maxTinyPiecesPerSet = 0;
   for (let set = 0; set < 40; set += 1) {
     const hand = generateHand(random, set, {
       board: empty,
@@ -302,6 +321,10 @@ function seededRng(seed) {
     categories.forEach((category) => {
       categoryCounts[category] = (categoryCounts[category] || 0) + 1;
     });
+    maxTinyPiecesPerSet = Math.max(
+      maxTinyPiecesPerSet,
+      categories.filter((category) => category === "single" || category === "duo").length,
+    );
     consecutiveLongLineSets = categories.includes("longLine")
       ? consecutiveLongLineSets + 1
       : 0;
@@ -313,8 +336,23 @@ function seededRng(seed) {
   }
   const lineRate =
     ((categoryCounts.shortLine || 0) + (categoryCounts.longLine || 0)) / 120;
+  const tinyRate =
+    ((categoryCounts.single || 0) + (categoryCounts.duo || 0)) / 120;
+  const chunkyRate =
+    ((categoryCounts.square2 || 0) +
+      (categoryCounts.square3 || 0) +
+      (categoryCounts.rectangle || 0) +
+      (categoryCounts.corner || 0) +
+      (categoryCounts.hook || 0) +
+      (categoryCounts.tee || 0) +
+      (categoryCounts.zig || 0)) / 120;
   assert.ok(lineRate < 0.35, "rolling bag should prevent line pieces from dominating");
+  assert.ok(tinyRate <= 0.15, "tiny rescue pieces should not dominate clean-board generation");
+  assert.ok(chunkyRate >= 0.55, "most clean-board pieces should be chunky and combo-friendly");
+  assert.ok(maxTinyPiecesPerSet <= 1, "clean-board hands should not contain multiple tiny pieces");
   assert.ok((categoryCounts.square2 || 0) >= 8, "2x2 squares should appear regularly");
+  assert.ok((categoryCounts.rectangle || 0) >= 8, "2x3 and 3x2 rectangles should appear regularly");
+  assert.ok((categoryCounts.rectangle || 0) <= 48, "rectangles should stay varied rather than dominate");
   assert.ok((categoryCounts.square3 || 0) >= 2, "3x3 squares should appear occasionally");
   assert.ok(
     maxConsecutiveLongLineSets <= 2,

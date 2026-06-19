@@ -170,6 +170,25 @@ export const SKINS = Object.freeze([
     tone: "dark",
     swatches: ["#00f5ff", "#fc28a8", "#baff29", "#8b5cf6"],
     board: "#10181f",
+    visual: {
+      blockMotif: "gloss",
+      boardMotif: "clean",
+      particle: {
+        preset: "electric",
+        colors: ["#ffffff", "#00f5ff", "#fc28a8", "#baff29"],
+      },
+      boardClear: {
+        preset: "neon",
+        glow: "#00f5ff",
+        flash: "#ffffff",
+        sweep: "#fc28a8",
+        accent: "#baff29",
+        particlePreset: "electric",
+        fragments: "electric",
+      },
+      fever: { preset: "electric-aura", glow: "#00f5ff", accent: "#fc28a8" },
+      praiseAccent: ["#ffffff", "#00f5ff", "#fc28a8"],
+    },
     ui: {
       backgroundStart: "#171535",
       backgroundMid: "#10162d",
@@ -208,6 +227,23 @@ export const SKINS = Object.freeze([
     tone: "light",
     swatches: ["#ff8ab3", "#7dd3fc", "#f9a8d4", "#fde047"],
     board: "#5d3a69",
+    visual: {
+      particle: {
+        preset: "candy",
+        colors: ["#fff7fb", "#ff8ab3", "#7dd3fc", "#fde047"],
+      },
+      boardClear: {
+        preset: "candy",
+        glow: "#ff9fca",
+        flash: "#ffffff",
+        sweep: "#7dd3fc",
+        accent: "#fde047",
+        particlePreset: "candy",
+        fragments: "candy",
+      },
+      fever: { preset: "jelly-aura", glow: "#ff9fca", accent: "#7dd3fc" },
+      praiseAccent: ["#ffffff", "#fde047", "#ff8ab3"],
+    },
     ui: {
       backgroundStart: "#d96fa5",
       backgroundMid: "#a667bd",
@@ -364,6 +400,23 @@ export const SKINS = Object.freeze([
     tone: "dark",
     swatches: ["#67e8f9", "#38bdf8", "#a5f3fc", "#2dd4bf"],
     board: "#102c46",
+    visual: {
+      particle: {
+        preset: "ice",
+        colors: ["#ffffff", "#a5f3fc", "#67e8f9", "#38bdf8"],
+      },
+      boardClear: {
+        preset: "ice",
+        glow: "#67e8f9",
+        flash: "#ffffff",
+        sweep: "#a5f3fc",
+        accent: "#38bdf8",
+        particlePreset: "ice",
+        fragments: "ice",
+      },
+      fever: { preset: "frost-aura", glow: "#a5f3fc", accent: "#38bdf8" },
+      praiseAccent: ["#ffffff", "#a5f3fc", "#38bdf8"],
+    },
     ui: {
       backgroundStart: "#1b7091",
       backgroundMid: "#15506f",
@@ -402,6 +455,23 @@ export const SKINS = Object.freeze([
     tone: "light",
     swatches: ["#fb7185", "#f9a8d4", "#c4b5fd", "#fda4af"],
     board: "#59364f",
+    visual: {
+      particle: {
+        preset: "petal",
+        colors: ["#fff5f8", "#f9a8d4", "#fb7185", "#c4b5fd"],
+      },
+      boardClear: {
+        preset: "sakura",
+        glow: "#f9a8d4",
+        flash: "#fff8fb",
+        sweep: "#c4b5fd",
+        accent: "#fb7185",
+        particlePreset: "petal",
+        fragments: "petal",
+      },
+      fever: { preset: "blossom-aura", glow: "#f9a8d4", accent: "#c4b5fd" },
+      praiseAccent: ["#fff8fb", "#f9a8d4", "#c4b5fd"],
+    },
     ui: {
       backgroundStart: "#d884a7",
       backgroundMid: "#a96b9d",
@@ -499,6 +569,23 @@ export const SKINS = Object.freeze([
     tone: "light",
     swatches: ["#f8fafc", "#cbd5e1", "#94a3b8", "#e2e8f0"],
     board: "#475569",
+    visual: {
+      particle: {
+        preset: "crystal",
+        colors: ["#ffffff", "#f8fafc", "#cbd5e1", "#94a3b8"],
+      },
+      boardClear: {
+        preset: "crystal",
+        glow: "#f8fafc",
+        flash: "#ffffff",
+        sweep: "#dbeafe",
+        accent: "#94a3b8",
+        particlePreset: "crystal",
+        fragments: "crystal",
+      },
+      fever: { preset: "crystal-aura", glow: "#ffffff", accent: "#cbd5e1" },
+      praiseAccent: ["#ffffff", "#e2e8f0", "#94a3b8"],
+    },
     ui: {
       backgroundStart: "#cbd5e1",
       backgroundMid: "#94a3b8",
@@ -537,6 +624,23 @@ export const SKINS = Object.freeze([
     tone: "dark",
     swatches: ["#ff5d8f", "#ffd166", "#4cc9f0", "#80ed99", "#b388ff"],
     board: "#191936",
+    visual: {
+      particle: {
+        preset: "rainbow",
+        colors: ["#ff5d8f", "#ffd166", "#4cc9f0", "#80ed99", "#b388ff"],
+      },
+      boardClear: {
+        preset: "rainbow",
+        glow: "#4cc9f0",
+        flash: "#ffffff",
+        sweep: "#ffd166",
+        accent: "#ff5d8f",
+        particlePreset: "rainbow",
+        fragments: "rainbow",
+      },
+      fever: { preset: "rainbow-aura", glow: "#4cc9f0", accent: "#ff5d8f" },
+      praiseAccent: ["#ffffff", "#ffd166", "#ff5d8f"],
+    },
     ui: {
       backgroundStart: "#4b2d83",
       backgroundMid: "#243f78",

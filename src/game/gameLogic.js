@@ -39,16 +39,28 @@ export const POWERUPS = {
 };
 
 export const PIECE_SHAPES = [
-  { id: "single", name: "Dot", cells: [[0, 0]], weight: 3 },
-  { id: "duo-h", name: "Bar 2", cells: [[0, 0], [0, 1]], weight: 5 },
-  { id: "duo-v", name: "Stack 2", cells: [[0, 0], [1, 0]], weight: 5 },
-  { id: "tri-h", name: "Bar 3", cells: [[0, 0], [0, 1], [0, 2]], weight: 5 },
-  { id: "tri-v", name: "Stack 3", cells: [[0, 0], [1, 0], [2, 0]], weight: 5 },
-  { id: "line4-h", name: "Bar 4", cells: [[0, 0], [0, 1], [0, 2], [0, 3]], weight: 3 },
-  { id: "line4-v", name: "Stack 4", cells: [[0, 0], [1, 0], [2, 0], [3, 0]], weight: 3 },
-  { id: "line5-h", name: "Bar 5", cells: [[0, 0], [0, 1], [0, 2], [0, 3], [0, 4]], weight: 2 },
-  { id: "line5-v", name: "Stack 5", cells: [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0]], weight: 2 },
-  { id: "box2", name: "Square", cells: [[0, 0], [0, 1], [1, 0], [1, 1]], weight: 5 },
+  { id: "single", name: "Dot", cells: [[0, 0]], weight: 0.7 },
+  { id: "duo-h", name: "Bar 2", cells: [[0, 0], [0, 1]], weight: 1.7 },
+  { id: "duo-v", name: "Stack 2", cells: [[0, 0], [1, 0]], weight: 1.7 },
+  { id: "tri-h", name: "Bar 3", cells: [[0, 0], [0, 1], [0, 2]], weight: 6 },
+  { id: "tri-v", name: "Stack 3", cells: [[0, 0], [1, 0], [2, 0]], weight: 6 },
+  { id: "line4-h", name: "Bar 4", cells: [[0, 0], [0, 1], [0, 2], [0, 3]], weight: 4.5 },
+  { id: "line4-v", name: "Stack 4", cells: [[0, 0], [1, 0], [2, 0], [3, 0]], weight: 4.5 },
+  { id: "line5-h", name: "Bar 5", cells: [[0, 0], [0, 1], [0, 2], [0, 3], [0, 4]], weight: 2.4 },
+  { id: "line5-v", name: "Stack 5", cells: [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0]], weight: 2.4 },
+  { id: "box2", name: "Square", cells: [[0, 0], [0, 1], [1, 0], [1, 1]], weight: 7 },
+  {
+    id: "rect3x2",
+    name: "Block 3x2",
+    cells: [[0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [1, 2]],
+    weight: 1.8,
+  },
+  {
+    id: "rect2x3",
+    name: "Block 2x3",
+    cells: [[0, 0], [0, 1], [1, 0], [1, 1], [2, 0], [2, 1]],
+    weight: 1.8,
+  },
   {
     id: "box3",
     name: "Big Square",
@@ -57,7 +69,7 @@ export const PIECE_SHAPES = [
       [1, 0], [1, 1], [1, 2],
       [2, 0], [2, 1], [2, 2],
     ],
-    weight: 1,
+    weight: 1.7,
   },
   { id: "corner-a", name: "Corner", cells: [[0, 0], [1, 0], [1, 1]], weight: 4 },
   { id: "corner-b", name: "Corner", cells: [[0, 1], [1, 0], [1, 1]], weight: 4 },
@@ -68,8 +80,10 @@ export const PIECE_SHAPES = [
   { id: "step", name: "Step", cells: [[0, 0], [1, 0], [1, 1], [2, 1]], weight: 3 },
 ];
 
-const AWKWARD_SHAPES = new Set(["box3", "l4-a", "l4-b", "t4", "zig", "step"]);
-const LARGE_SHAPES = new Set(["box3", "line5-h", "line5-v"]);
+const AWKWARD_SHAPES = new Set(["box3", "zig", "step"]);
+const LARGE_SHAPES = new Set(["box3", "rect3x2", "rect2x3", "line5-h", "line5-v"]);
+const CHUNKY_SHAPES = new Set(["box2", "rect3x2", "rect2x3", "box3", "l4-a", "l4-b", "t4"]);
+const TINY_SHAPES = new Set(["single", "duo-h", "duo-v"]);
 const LONG_LINE_SHAPES = new Set(["line4-h", "line4-v", "line5-h", "line5-v"]);
 const LINE_FRIENDLY_SHAPES = new Set([
   "single",
@@ -83,12 +97,8 @@ const LINE_FRIENDLY_SHAPES = new Set([
   "line5-v",
 ]);
 const DREAM_SET_IDS = [
-  ["tri-h", "line5-h", "box2"],
-  ["tri-v", "line5-v", "box2"],
-  ["tri-h", "line5-h", "corner-a"],
-  ["tri-v", "line5-v", "corner-b"],
-  ["tri-h", "line5-h", "t4"],
-  ["tri-v", "line5-v", "zig"],
+  ["rect3x2", "rect3x2", "box2"],
+  ["rect2x3", "rect2x3", "box2"],
 ];
 
 export const GAME_PHASES = {
@@ -105,6 +115,7 @@ export function getPieceCategory(shapeOrId) {
   if (id === "tri-h" || id === "tri-v") return "shortLine";
   if (LONG_LINE_SHAPES.has(id)) return "longLine";
   if (id === "box2") return "square2";
+  if (id === "rect3x2" || id === "rect2x3") return "rectangle";
   if (id === "box3") return "square3";
   if (id === "corner-a" || id === "corner-b") return "corner";
   if (id === "l4-a" || id === "l4-b") return "hook";
@@ -114,7 +125,7 @@ export function getPieceCategory(shapeOrId) {
 }
 
 function isCompactCategory(category) {
-  return ["square2", "corner", "hook", "tee", "zig"].includes(category);
+  return ["square2", "rectangle", "corner", "hook", "tee", "zig"].includes(category);
 }
 
 export function todayKey(date = new Date()) {
@@ -280,13 +291,15 @@ export function getAdaptiveShapeWeight(shape, context = {}) {
   const recentCategories = recentShapeIds.map(getPieceCategory);
   const categoryRecentCount = recentCategories.filter((item) => item === category).length;
   const exactRecentCount = recentShapeIds.filter((id) => id === shape.id).length;
+  const recentTinyCount = recentShapeIds.filter((id) => TINY_SHAPES.has(id)).length;
 
   if (phase === GAME_PHASES.warmup) {
-    if (cellCount <= 3) weight *= 1.75;
-    if (cellCount === 4 && !AWKWARD_SHAPES.has(shape.id)) weight *= 1.18;
-    if (cellCount >= 5) weight *= 0.28;
-    if (AWKWARD_SHAPES.has(shape.id)) weight *= 0.42;
-    if (LINE_FRIENDLY_SHAPES.has(shape.id)) weight *= 1.08;
+    if (cellCount <= 2) weight *= fullness < 0.42 ? 0.18 : 0.62;
+    if (cellCount === 3) weight *= 0.96;
+    if (cellCount === 4) weight *= 1.48;
+    if (cellCount >= 5 && fullness < 0.34) weight *= 1.45;
+    if (AWKWARD_SHAPES.has(shape.id)) weight *= shape.id === "box3" ? 0.92 : 0.72;
+    if (CHUNKY_SHAPES.has(shape.id)) weight *= 1.52;
   } else if (phase === GAME_PHASES.pressure) {
     if (cellCount >= 4 && fullness < 0.55) weight *= 1.2;
     if (AWKWARD_SHAPES.has(shape.id) && fullness < 0.5) weight *= 1.12;
@@ -297,14 +310,15 @@ export function getAdaptiveShapeWeight(shape, context = {}) {
   }
 
   if (crowded) {
-    if (cellCount <= 2) weight *= veryCrowded ? 2.7 : 1.9;
+    if (cellCount <= 2) weight *= veryCrowded ? 3.6 : 1.65;
     if (cellCount === 3) weight *= 1.35;
     if (cellCount >= 5) weight *= veryCrowded ? 0.12 : 0.36;
     if (AWKWARD_SHAPES.has(shape.id)) weight *= veryCrowded ? 0.38 : 0.68;
   }
 
   if (struggling) {
-    if (cellCount <= 3) weight *= 1.35;
+    if (cellCount <= 2) weight *= 1.6;
+    if (cellCount === 3) weight *= 1.25;
     if (AWKWARD_SHAPES.has(shape.id)) weight *= 0.58;
     if (LARGE_SHAPES.has(shape.id)) weight *= 0.42;
   }
@@ -317,11 +331,12 @@ export function getAdaptiveShapeWeight(shape, context = {}) {
     weight *= phase === GAME_PHASES.warmup ? 2.15 : struggling ? 1.7 : 1.42;
   }
 
-  if (category === "longLine") weight *= 0.64;
-  if (category === "shortLine") weight *= 0.78;
-  if (category === "square2") weight *= 1.34;
-  if (category === "square3" && fullness < 0.48) weight *= 1.28;
-  if (isCompactCategory(category)) weight *= 1.16;
+  if (category === "longLine") weight *= 0.9;
+  if (category === "shortLine") weight *= 1;
+  if (category === "square2") weight *= 1.58;
+  if (category === "rectangle") weight *= fullness < 0.55 ? 1.18 : 0.58;
+  if (category === "square3" && fullness < 0.42) weight *= 1.46;
+  if (isCompactCategory(category)) weight *= 1.22;
 
   if (category === "longLine") {
     const recentLongLines = recentCategories.filter((item) => item === "longLine").length;
@@ -330,7 +345,8 @@ export function getAdaptiveShapeWeight(shape, context = {}) {
     else if (recentLongLines >= 1) weight *= 0.62;
   }
   if (category === "shortLine" && categoryRecentCount >= 3) weight *= 0.48;
-  if (category === "square2" && !recentCategories.slice(-9).includes("square2")) weight *= 2.35;
+  if (category === "square2" && !recentCategories.slice(-9).includes("square2")) weight *= 2.65;
+  if (category === "rectangle" && !recentCategories.slice(-8).includes("rectangle")) weight *= 1.55;
   if (
     category === "square3" &&
     fullness < 0.48 &&
@@ -346,6 +362,19 @@ export function getAdaptiveShapeWeight(shape, context = {}) {
   }
   if (categoryRecentCount >= 4) weight *= 0.38;
   if (exactRecentCount > 0) weight *= 0.42 ** exactRecentCount;
+  if (TINY_SHAPES.has(shape.id) && recentTinyCount >= 2) {
+    weight *= veryCrowded ? 0.72 : 0.16;
+  }
+  if (shape.id === "single" && !veryCrowded && !boardClearOpportunity && hints.single === 0) {
+    weight *= phase === GAME_PHASES.warmup ? 0.14 : 0.34;
+  }
+  if (
+    (shape.id === "duo-h" || shape.id === "duo-v") &&
+    !crowded &&
+    clearOpportunity === 0
+  ) {
+    weight *= phase === GAME_PHASES.warmup ? 0.38 : 0.66;
+  }
 
   if (shape.id === "single" && hints.single > 0) weight *= 1 + Math.min(2.2, hints.single * 0.7);
   if (shape.id === "duo-h" && hints.duoH > 0) weight *= 1 + Math.min(1.7, hints.duoH * 0.55);
@@ -396,11 +425,111 @@ function boardOccupancyKey(board) {
   return board.map((row) => row.map((cell) => (cell ? "1" : "0")).join("")).join("");
 }
 
+function countShapePlacements(board, shape, cap = 12) {
+  if (!shape) return 0;
+  const piece = { cells: shape.cells, placed: false };
+  let count = 0;
+  for (let row = 0; row < BOARD_SIZE; row += 1) {
+    for (let col = 0; col < BOARD_SIZE; col += 1) {
+      if (!canPlacePiece(board, piece, row, col)) continue;
+      count += 1;
+      if (count >= cap) return count;
+    }
+  }
+  return count;
+}
+
+function analyzeBoardStructure(board) {
+  const directions = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+  let isolatedFilled = 0;
+  let nearClearLines = 0;
+  const visited = new Set();
+  let smallGaps = 0;
+
+  for (let row = 0; row < BOARD_SIZE; row += 1) {
+    const rowFilled = board[row].filter(Boolean).length;
+    if (rowFilled >= 5 && rowFilled < BOARD_SIZE) nearClearLines += 1;
+    for (let col = 0; col < BOARD_SIZE; col += 1) {
+      if (!board[row][col]) continue;
+      const hasNeighbor = directions.some(([dr, dc]) => board[row + dr]?.[col + dc]);
+      if (!hasNeighbor) isolatedFilled += 1;
+    }
+  }
+
+  for (let col = 0; col < BOARD_SIZE; col += 1) {
+    let colFilled = 0;
+    for (let row = 0; row < BOARD_SIZE; row += 1) {
+      if (board[row][col]) colFilled += 1;
+    }
+    if (colFilled >= 5 && colFilled < BOARD_SIZE) nearClearLines += 1;
+  }
+
+  for (let row = 0; row < BOARD_SIZE; row += 1) {
+    for (let col = 0; col < BOARD_SIZE; col += 1) {
+      const startKey = `${row}-${col}`;
+      if (board[row][col] || visited.has(startKey)) continue;
+      const queue = [[row, col]];
+      visited.add(startKey);
+      let size = 0;
+      let touchesEdge = false;
+      while (queue.length) {
+        const [gapRow, gapCol] = queue.shift();
+        size += 1;
+        if (
+          gapRow === 0 ||
+          gapCol === 0 ||
+          gapRow === BOARD_SIZE - 1 ||
+          gapCol === BOARD_SIZE - 1
+        ) {
+          touchesEdge = true;
+        }
+        directions.forEach(([dr, dc]) => {
+          const nextRow = gapRow + dr;
+          const nextCol = gapCol + dc;
+          const key = `${nextRow}-${nextCol}`;
+          if (
+            nextRow < 0 ||
+            nextRow >= BOARD_SIZE ||
+            nextCol < 0 ||
+            nextCol >= BOARD_SIZE ||
+            board[nextRow][nextCol] ||
+            visited.has(key)
+          ) {
+            return;
+          }
+          visited.add(key);
+          queue.push([nextRow, nextCol]);
+        });
+      }
+      if (!touchesEdge && size <= 2) smallGaps += 1;
+    }
+  }
+
+  const chunkyShapeIds = ["box2", "rect3x2", "rect2x3", "t4", "l4-a"];
+  const chunkyPlacements = chunkyShapeIds.reduce((total, id) => {
+    const shape = PIECE_SHAPES.find((item) => item.id === id);
+    return total + countShapePlacements(board, shape, 8);
+  }, 0);
+
+  return {
+    isolatedFilled,
+    smallGaps,
+    nearClearLines,
+    chunkyPlacements,
+    score:
+      nearClearLines * 26 +
+      chunkyPlacements * 4 -
+      isolatedFilled * 34 -
+      smallGaps * 72,
+  };
+}
+
 function getPlacementOutcomes(board, shape, limit = 3, cache) {
   const cacheKey = cache ? `${shape.id}:${boardOccupancyKey(board)}` : "";
   if (cache?.has(cacheKey)) return cache.get(cacheKey);
   const piece = { cells: shape.cells, placed: false };
   const beforeFilled = board.flat().filter(Boolean).length;
+  const beforeStructure = analyzeBoardStructure(board);
   const outcomes = [];
 
   for (let row = 0; row < BOARD_SIZE; row += 1) {
@@ -414,6 +543,8 @@ function getPlacementOutcomes(board, shape, limit = 3, cache) {
       const afterFilled = nextBoard.flat().filter(Boolean).length;
       const boardClear = completed.count > 0 && isBoardEmpty(nextBoard);
       const fullnessReduction = Math.max(0, beforeFilled - afterFilled);
+      const nextStructure = analyzeBoardStructure(nextBoard);
+      const structureGain = nextStructure.score - beforeStructure.score;
       outcomes.push({
         board: nextBoard,
         boardClear,
@@ -421,6 +552,8 @@ function getPlacementOutcomes(board, shape, limit = 3, cache) {
           completed.count * 95 +
           Math.max(0, completed.count - 1) * 120 +
           fullnessReduction * 7 +
+          structureGain * 1.4 +
+          Math.max(0, nextStructure.nearClearLines - beforeStructure.nearClearLines) * 55 +
           (boardClear ? 4200 : 0),
       });
     }
@@ -451,6 +584,10 @@ export function evaluateHandFun(board, shapes, context = {}) {
   const squareCount = categories.filter((category) =>
     category === "square2" || category === "square3"
   ).length;
+  const rectangleCount = categories.filter((category) => category === "rectangle").length;
+  const tinyCount = shapes.filter((shape) => TINY_SHAPES.has(shape.id)).length;
+  const chunkyCount = shapes.filter((shape) => CHUNKY_SHAPES.has(shape.id)).length;
+  const totalCells = shapes.reduce((total, shape) => total + shape.cells.length, 0);
   const recentCategories = (context.recentShapeIds || []).slice(-12).map(getPieceCategory);
   let states = [{ board, mask: 0, score: 0, boardClear: false }];
 
@@ -483,6 +620,8 @@ export function evaluateHandFun(board, shapes, context = {}) {
     score += phaseValue + Math.min(5000, pity * 260);
     if (compactCount > 0) score += 760;
     if (squareCount > 0) score += 480;
+    if (rectangleCount > 0) score += 80;
+    if (chunkyCount > 0) score += 540;
     if (totalLineCount >= 3) score -= 1200;
   } else {
     score += pity * 24;
@@ -490,6 +629,13 @@ export function evaluateHandFun(board, shapes, context = {}) {
   score += categoryVariety * 220;
   score += compactCount * 180;
   score += squareCount * 130;
+  score += rectangleCount * 20;
+  if (rectangleCount > 1) score -= (rectangleCount - 1) * 820;
+  score += chunkyCount * 210;
+  score += Math.min(520, Math.max(0, totalCells - 10) * 52);
+  if (chunkyCount === 0) score -= phase === GAME_PHASES.warmup ? 1050 : 520;
+  if (tinyCount > 1) score -= (tinyCount - 1) * (phase === GAME_PHASES.warmup ? 1700 : 980);
+  if (tinyCount === 3) score -= 2200;
   if (longLineCount > 1) score -= (longLineCount - 1) * 1200;
   if (totalLineCount >= 3) score -= 780;
   if (
@@ -567,6 +713,10 @@ function pickDirectorShape(pool, rng, options = {}) {
     if (options.suppressAwkward && AWKWARD_SHAPES.has(shape.id)) adjusted *= 0.08;
     if (options.suppressLarge && LARGE_SHAPES.has(shape.id)) adjusted *= 0.06;
     if (options.suppressLongLine && LONG_LINE_SHAPES.has(shape.id)) adjusted *= 0.04;
+    if (options.suppressTiny && TINY_SHAPES.has(shape.id)) adjusted *= 0.025;
+    if (options.preferChunky && CHUNKY_SHAPES.has(shape.id)) {
+      adjusted *= getPieceCategory(shape) === "rectangle" ? 1.15 : 4.2;
+    }
     return { shape, weight: Math.max(0.002, adjusted) };
   });
   const total = weighted.reduce((sum, item) => sum + item.weight, 0);
@@ -588,11 +738,17 @@ export function generateHand(rng = Math.random, seed = Date.now(), context = {})
   const directorCache = new Map();
   const recentCategories = recentShapeIds.map(getPieceCategory);
   const recentLongLines = recentCategories.filter((category) => category === "longLine").length;
+  const recentTinyPieces = recentShapeIds.filter((id) => TINY_SHAPES.has(id)).length;
+  const fullness = getBoardFullness(context.board);
   const dreamSets = DREAM_SET_IDS
     .map((ids) => ids.map((id) => PIECE_SHAPES.find((shape) => shape.id === id)))
     .filter((shapes) => shapes.every((shape) => shape && shapeCanFit(context.board, shape)));
 
-  if (phase === GAME_PHASES.warmup && recentLongLines < 2) {
+  if (
+    phase === GAME_PHASES.warmup &&
+    recentLongLines < 2 &&
+    (Number(context.boardClearPity) || 0) >= 5
+  ) {
     candidateSets.push(...dreamSets);
   }
 
@@ -621,11 +777,19 @@ export function generateHand(rng = Math.random, seed = Date.now(), context = {})
       const awkwardCount = shapes.filter((shape) => AWKWARD_SHAPES.has(shape.id)).length;
       const largeCount = shapes.filter((shape) => LARGE_SHAPES.has(shape.id)).length;
       const longLineCount = shapes.filter((shape) => LONG_LINE_SHAPES.has(shape.id)).length;
+      const tinyCount = shapes.filter((shape) => TINY_SHAPES.has(shape.id)).length;
       shapes.push(pickDirectorShape(directorPool, rng, {
         recentAwkward: recentShapeIds.slice(-3).some((id) => AWKWARD_SHAPES.has(id)),
         suppressAwkward: awkwardCount >= (phase === GAME_PHASES.warmup ? 1 : 2),
         suppressLarge: largeCount >= (phase === GAME_PHASES.highScore ? 2 : 1),
         suppressLongLine: longLineCount >= 1,
+        suppressTiny:
+          fullness < 0.68 &&
+          (tinyCount >= 1 || recentTinyPieces >= (phase === GAME_PHASES.warmup ? 1 : 2)),
+        preferChunky:
+          slot === 0 &&
+          fullness < 0.58 &&
+          !shapes.some((shape) => CHUNKY_SHAPES.has(shape.id)),
         selectedShapeIds: [...recentShapeIds, ...shapes.map((shape) => shape.id)],
       }));
     }
@@ -638,6 +802,8 @@ export function generateHand(rng = Math.random, seed = Date.now(), context = {})
       shapes,
       quickScore:
         shapes.reduce((sum, shape) => sum + (weightByShape.get(shape.id) || 0), 0) +
+        shapes.filter((shape) => CHUNKY_SHAPES.has(shape.id)).length * 180 +
+        shapes.filter((shape) => TINY_SHAPES.has(shape.id)).length * -240 +
         (dreamSets.includes(shapes) ? 1200 : 0),
     }))
     .sort((a, b) => b.quickScore - a.quickScore)

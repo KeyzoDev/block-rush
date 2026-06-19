@@ -20,3 +20,10 @@ npm run build
 ```bash
 npm test
 ```
+
+## PWA
+
+- Installable in supported mobile browsers over HTTPS.
+- Manifest, service worker, favicons, Apple touch icon, and Android maskable icon live in `public/`.
+- Netlify SPA fallback is configured in `netlify.toml`.
+- App version shown in Settings follows `package.json`.
