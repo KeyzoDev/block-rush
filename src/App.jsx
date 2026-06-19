@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import packageMetadata from "../package.json";
 import {
   ArrowLeft,
   Award,
@@ -9,6 +10,7 @@ import {
   Check,
   Copy,
   Coins,
+  Download,
   Gift,
   Hammer,
   Hand,
@@ -95,6 +97,13 @@ import {
   copyResultText,
   createResultShareText,
 } from "./share/resultShare.js";
+
+const APP_VERSION = packageMetadata.version;
+const APP_LOGO = "/brand/block-rush-logo.webp";
+
+function detectStandaloneMode() {
+  return window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone === true;
+}
 
 let audioContext;
 let audioMaster;
@@ -621,7 +630,8 @@ function Board({
       const row = Array.isArray(mark) ? mark[0] : mark.row;
       const col = Array.isArray(mark) ? mark[1] : mark.col;
       const delay = Array.isArray(mark) ? 0 : mark.delay;
-      return [`${row}-${col}`, delay || 0];
+      const axis = Array.isArray(mark) ? "row" : mark.axis;
+      return [`${row}-${col}`, { delay: delay || 0, axis }];
     }),
   );
   const landedCells = new Map(
@@ -643,8 +653,8 @@ function Board({
           const key = `${rowIndex}-${colIndex}`;
           const previewColorIndex = previewCells.get(key);
           const preview = previewColorIndex !== undefined;
-          const clearDelay = clearCells.get(key);
-          const clearing = clearDelay !== undefined;
+          const clearMark = clearCells.get(key);
+          const clearing = clearMark !== undefined;
           const landDelay = landedCells.get(key);
           const landed = landDelay !== undefined;
           const lineReady = previewRows.has(rowIndex) || previewCols.has(colIndex);
@@ -665,6 +675,7 @@ function Board({
                 preview && !hover?.valid ? "invalid" : "",
                 lineReady ? "line-ready" : "",
                 clearing ? "clearing" : "",
+                clearing ? `clear-${clearMark.axis || "row"}` : "",
                 landed ? "landed" : "",
                 activePower ? "tool-target" : "",
               ].join(" ")}
@@ -672,7 +683,7 @@ function Board({
               style={{
                 ...(color && !preview ? { "--block-color": color } : {}),
                 ...(previewColor ? { "--preview-color": previewColor } : {}),
-                ...(clearing ? { "--clear-delay": `${clearDelay}ms` } : {}),
+                ...(clearing ? { "--clear-delay": `${clearMark.delay}ms` } : {}),
                 ...(landed ? { "--land-delay": `${landDelay}ms` } : {}),
               }}
               data-row={rowIndex}
@@ -704,13 +715,13 @@ function BoardClearFX({ reward, skin }) {
       <i className="clear-ring ring-two" />
       <i className="clear-theme-sweep" />
       <div className="clear-fragments">
-        {Array.from({ length: 18 + intensity * 4 }, (_, index) => (
+        {Array.from({ length: 16 + intensity * 3 }, (_, index) => (
           <i
             key={index}
             className={`clear-fragment fragment-${skin.visual.boardClear.fragments}`}
             style={{
               "--fragment-index": index,
-              "--fragment-angle": `${(360 / (18 + intensity * 4)) * index}deg`,
+              "--fragment-angle": `${(360 / (16 + intensity * 3)) * index}deg`,
               "--fragment-distance": `${92 + (index % 5) * 18}px`,
               "--fragment-delay": `${(index % 6) * 18}ms`,
             }}
@@ -767,6 +778,7 @@ function GameScreen({
         className={[
           "board-wrap",
           boardClear ? "board-clear-active" : "",
+          praise?.combo >= 2 ? "combo-impact" : "",
           boardClear ? `clear-${skin.visual.boardClear.preset}` : "",
           boardClear
             ? `clear-intensity-${boardClear.streak >= 5 ? 4 : boardClear.streak >= 3 ? 3 : boardClear.streak >= 2 ? 2 : 1}`
@@ -801,6 +813,8 @@ function GameScreen({
                 "--particle-rotation": `${particle.rotation}deg`,
                 "--particle-scale": particle.scale,
                 "--particle-delay": `${particle.delay}ms`,
+                "--particle-duration": `${particle.lifetime}ms`,
+                "--particle-gravity": `${particle.gravity}px`,
               }}
             />
           ))}
@@ -894,8 +908,7 @@ function MainMenu({ run, profile, onPlay, onNewGame, onShop, onMissions, onStats
             8x8 block puzzle
           </span>
           <h1 className="menu-logo">
-            <span>Block</span>
-            <strong>Rush</strong>
+            <img src={APP_LOGO} alt="Block Rush" draggable="false" fetchPriority="high" />
           </h1>
           <p>Fit smart. Clear lines. Keep the rush alive.</p>
         </div>
@@ -1127,21 +1140,38 @@ function ShopScreen({ profile, onBack, onBuySkin, onSelectSkin, onBuyPowerup }) 
 
 function MissionsScreen({ profile, onBack, onClaim, onOpenChest }) {
   const nextMilestone = getNextBoardClearMilestone(profile.totalBoardClears);
+  const completedCount = profile.dailyMissionIds.filter((missionId) => {
+    const mission = getMissionDefinition(missionId);
+    const state = profile.dailyMissionProgress[missionId];
+    return mission && state?.progress >= mission.target;
+  }).length;
   return (
-    <main className="panel-screen">
-      <ScreenHeader title="Missions" onBack={onBack} meta="Daily" />
+    <main className="panel-screen missions-screen">
+      <ScreenHeader title="Missions" onBack={onBack} meta={`${completedCount}/3 daily`} />
+      <section className="mission-overview">
+        <div>
+          <span className="eyebrow">Daily missions</span>
+          <h2>Keep the rush going</h2>
+          <p>Complete today’s goals and claim coin rewards.</p>
+        </div>
+        <strong>{completedCount}/3</strong>
+      </section>
       <section className="mission-list">
         {profile.dailyMissionIds.map((missionId) => {
           const mission = getMissionDefinition(missionId);
           const state = profile.dailyMissionProgress[missionId] || { progress: 0, claimed: false };
           const ready = state.progress >= mission.target;
+          const status = state.claimed ? "claimed" : ready ? "ready" : "active";
           return (
-            <article className={`mission-card ${ready ? "complete" : ""}`} key={mission.id}>
+            <article className={`mission-card ${status}`} key={mission.id}>
               <div className="mission-icon" data-tier={mission.tier}>
-                {ready ? <Check size={20} aria-hidden="true" /> : <Target size={20} aria-hidden="true" />}
+                {state.claimed ? <Check size={20} aria-hidden="true" /> : <Target size={20} aria-hidden="true" />}
               </div>
               <div className="mission-body">
-                <span>{mission.tier}</span>
+                <div className="mission-title-row">
+                  <span>{mission.tier}</span>
+                  <strong><Coins size={14} aria-hidden="true" /> {mission.reward}</strong>
+                </div>
                 <h2>{mission.title}</h2>
                 <ProgressBar value={Math.min(state.progress, mission.target)} max={mission.target} label="Progress" />
               </div>
@@ -1151,8 +1181,8 @@ function MissionsScreen({ profile, onBack, onClaim, onOpenChest }) {
                 disabled={!ready || state.claimed}
                 onClick={() => onClaim(mission.id)}
               >
-                <Coins size={16} aria-hidden="true" />
-                <span>{state.claimed ? "Done" : mission.reward}</span>
+                {state.claimed ? <Check size={16} aria-hidden="true" /> : <Coins size={16} aria-hidden="true" />}
+                <span>{state.claimed ? "Claimed" : ready ? "Claim" : `${Math.min(state.progress, mission.target)}/${mission.target}`}</span>
               </button>
             </article>
           );
@@ -1261,10 +1291,19 @@ function StatsScreen({ profile, onBack }) {
   );
 }
 
-function SettingsScreen({ profile, onBack, onToggleSetting, onReplayTutorial, onResetProgress }) {
+function SettingsScreen({
+  profile,
+  onBack,
+  onToggleSetting,
+  onReplayTutorial,
+  onResetProgress,
+  installAvailable,
+  installed,
+  onInstall,
+}) {
   return (
     <main className="panel-screen">
-      <ScreenHeader title="Settings" onBack={onBack} meta="Local save" />
+      <ScreenHeader title="Settings" onBack={onBack} meta={`v${APP_VERSION}`} />
       <section className="settings-list">
         <button className="setting-row" type="button" onClick={() => onToggleSetting("sound")}>
           {profile.settings.sound ? <Volume2 size={20} aria-hidden="true" /> : <VolumeX size={20} aria-hidden="true" />}
@@ -1291,12 +1330,26 @@ function SettingsScreen({ profile, onBack, onToggleSetting, onReplayTutorial, on
           <span>Replay tutorial</span>
           <ChevronRight size={18} aria-hidden="true" />
         </button>
+        {installAvailable && (
+          <button className="setting-row install" type="button" onClick={onInstall}>
+            <Download size={20} aria-hidden="true" />
+            <span>Install Block Rush</span>
+            <strong>Install</strong>
+          </button>
+        )}
         <button className="setting-row danger" type="button" onClick={onResetProgress}>
           <RotateCcw size={20} aria-hidden="true" />
           <span>Reset progress</span>
           <ChevronRight size={18} aria-hidden="true" />
         </button>
       </section>
+      <footer className="settings-app-info">
+        <img src={APP_LOGO} alt="" aria-hidden="true" draggable="false" />
+        <div>
+          <strong>Block Rush v{APP_VERSION}</strong>
+          <span>{installed ? "Installed app" : "Mobile web app"}</span>
+        </div>
+      </footer>
     </main>
   );
 }
@@ -1316,6 +1369,7 @@ function ScreenHeader({ title, meta, onBack }) {
 }
 
 function GameOverScreen({ run, profile, onRestart, onMenu, onShop, onMissions, onShare, onCopy }) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const bestBeat = run.score > (run.bestAtStart || 0);
   const motivation = bestBeat ? "New best!" : run.score >= profile.bestScore * 0.85 ? "So close!" : "One more round?";
   const summary = run.resultSummary || {};
@@ -1331,97 +1385,146 @@ function GameOverScreen({ run, profile, onRestart, onMenu, onShop, onMissions, o
     .map(([id, gain]) => ({ mission: getMissionDefinition(id), gain }))
     .filter((item) => item.mission);
   const resultTheme = getSkin(run.themeId || profile.selectedThemeId);
+  const completedDailyCount = profile.dailyMissionIds.filter((missionId) => {
+    const mission = getMissionDefinition(missionId);
+    const state = profile.dailyMissionProgress[missionId];
+    return mission && state?.progress >= mission.target;
+  }).length;
+  const progressHighlightCount =
+    completedMissions.length + unlockedAchievements.length + readyThemes.length;
   return (
-    <main className="panel-screen game-over">
-      <section className="result-share-card" style={getSkinCssVariables(resultTheme)}>
-        <div className="result-brand">
-          <span>Block</span>
-          <strong>Rush</strong>
-        </div>
-        <span className="eyebrow">{bestBeat ? "New Best!" : "Final Score"}</span>
-        <h1>{run.score.toLocaleString()}</h1>
-        <div className="share-card-stats">
-          <span><Award size={15} /> Board Clears <strong>{run.boardClears || 0}</strong></span>
-          <span><Star size={15} /> Best Streak <strong>x{run.bestBoardClearStreak || 0}</strong></span>
-          <span><Zap size={15} /> Combo <strong>x{run.biggestCombo || 0}</strong></span>
-          <span><Coins size={15} /> Coins <strong>+{run.coinsEarned || 0}</strong></span>
-        </div>
-        <div className="result-theme">
-          <ThemeMiniBoard skin={resultTheme} />
-          <span>{resultTheme.name}</span>
-        </div>
-        <p>Can you beat me?</p>
-      </section>
-      <p className="result-motivation">{motivation}</p>
-      <section className="result-stats">
-        <StatPill icon={Trophy} label="Best" value={profile.bestScore.toLocaleString()} />
-        <StatPill icon={Zap} label="Lines" value={run.totalLines} />
-        <StatPill icon={Star} label="Best combo" value={`x${run.biggestCombo || 0}`} />
-        <StatPill icon={Coins} label="Earned" value={`+${run.coinsEarned || 0}`} />
-        <StatPill icon={Award} label="Board Clears" value={run.boardClears || 0} />
-        <StatPill icon={Gift} label="Rush Fever" value={run.feverActivations || 0} />
-        <StatPill icon={Star} label="Clear streak" value={`x${run.bestBoardClearStreak || 0}`} />
-      </section>
-      {(missionGains.length > 0 || completedMissions.length > 0 || unlockedAchievements.length > 0 || readyThemes.length > 0) && (
-        <section className="run-progress-summary">
-          <span className="eyebrow">Progress gained</span>
-          {missionGains.map(({ mission, gain }) => (
-            <div key={`gain-${mission.id}`}>
-              <Target size={16} aria-hidden="true" />
-              <span>{mission.title}</span>
-              <strong>+{gain}</strong>
+    <>
+      <main className="game-over compact-result">
+        <section className="result-hero-card" style={getSkinCssVariables(resultTheme)}>
+          <div className="result-topline">
+            <div className="result-brand">
+              <span>Block</span>
+              <strong>Rush</strong>
             </div>
-          ))}
-          {completedMissions.map((mission) => (
-            <div key={mission.id}>
-              <Check size={16} aria-hidden="true" />
-              <span>{mission.title}</span>
-              <strong>+{mission.reward}</strong>
+            <div className="result-theme compact">
+              <ThemeMiniBoard skin={resultTheme} />
+              <span>{resultTheme.name}</span>
             </div>
-          ))}
-          {unlockedAchievements.map((achievement) => (
-            <div key={achievement.id}>
-              <Award size={16} aria-hidden="true" />
-              <span>{achievement.title}</span>
-              <strong>Achievement</strong>
-            </div>
-          ))}
-          {readyThemes.map((theme) => (
-            <div key={theme.id}>
-              <ShoppingBag size={16} aria-hidden="true" />
-              <span>{theme.name}</span>
+          </div>
+          <span className={`result-label ${bestBeat ? "new-best" : ""}`}>
+            {bestBeat ? "New Best!" : "Final Score"}
+          </span>
+          <h1>{run.score.toLocaleString()}</h1>
+          <p className="result-motivation">{motivation}</p>
+          <div className="result-quick-grid">
+            <div><Trophy size={16} /><span>Best</span><strong>{profile.bestScore.toLocaleString()}</strong></div>
+            <div><Coins size={16} /><span>Coins</span><strong>+{run.coinsEarned || 0}</strong></div>
+            <div><Award size={16} /><span>Clears</span><strong>{run.boardClears || 0}</strong></div>
+            <div><Zap size={16} /><span>Combo</span><strong>x{run.biggestCombo || 0}</strong></div>
+          </div>
+          <div className="result-streak-line">
+            <Star size={15} aria-hidden="true" />
+            <span>Best Board Clear streak</span>
+            <strong>x{run.bestBoardClearStreak || 0}</strong>
+          </div>
+        </section>
+
+        <section className="result-progress-compact">
+          <div>
+            <Target size={18} aria-hidden="true" />
+            <span>Daily Missions</span>
+            <strong>{completedDailyCount}/3</strong>
+          </div>
+          {progressHighlightCount > 0 && (
+            <div className="result-highlight">
+              <Gift size={18} aria-hidden="true" />
+              <span>{progressHighlightCount} new reward{progressHighlightCount > 1 ? "s" : ""}</span>
               <strong>Ready</strong>
             </div>
-          ))}
+          )}
+          <button type="button" onClick={() => setDetailsOpen(true)}>
+            <BarChart3 size={17} aria-hidden="true" />
+            <span>More Details</span>
+            <ChevronRight size={16} aria-hidden="true" />
+          </button>
         </section>
+
+        <section className="result-actions">
+          <button className="primary-button" type="button" onClick={onRestart}>
+            <RotateCcw size={20} aria-hidden="true" />
+            <span>Play Again</span>
+          </button>
+          <button className="secondary-button" type="button" onClick={onShare}>
+            <Share2 size={18} aria-hidden="true" />
+            <span>Share</span>
+          </button>
+          <button className="secondary-button" type="button" onClick={onMenu}>
+            <Home size={18} aria-hidden="true" />
+            <span>Main Menu</span>
+          </button>
+        </section>
+      </main>
+
+      {detailsOpen && (
+        <div className="modal-layer result-details-layer" role="dialog" aria-modal="true" aria-label="Run details">
+          <section className="modal-card result-details-sheet">
+            <div className="details-sheet-header">
+              <div>
+                <span className="eyebrow">Run details</span>
+                <h2>Rewards & Progress</h2>
+              </div>
+              <button className="round-button" type="button" onClick={() => setDetailsOpen(false)} title="Close">
+                <X size={18} aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="details-stat-grid">
+              <StatPill icon={Zap} label="Lines" value={run.totalLines} />
+              <StatPill icon={Gift} label="Rush Fever" value={run.feverActivations || 0} />
+              <StatPill icon={Star} label="Clear streak" value={`x${run.bestBoardClearStreak || 0}`} />
+              <StatPill icon={Coins} label="Earned" value={`+${run.coinsEarned || 0}`} />
+            </div>
+
+            {(missionGains.length > 0 || completedMissions.length > 0) && (
+              <section className="details-group">
+                <div className="details-group-title">
+                  <Target size={17} aria-hidden="true" />
+                  <h3>Missions</h3>
+                  <button type="button" onClick={onMissions}>View Missions</button>
+                </div>
+                {completedMissions.map((mission) => (
+                  <div key={mission.id}><Check size={15} /><span>{mission.title}</span><strong>+{mission.reward}</strong></div>
+                ))}
+                {missionGains.slice(0, 3).map(({ mission, gain }) => (
+                  <div key={`gain-${mission.id}`}><Target size={15} /><span>{mission.title}</span><strong>+{gain}</strong></div>
+                ))}
+              </section>
+            )}
+
+            {unlockedAchievements.length > 0 && (
+              <section className="details-group">
+                <div className="details-group-title"><Award size={17} /><h3>Achievements</h3></div>
+                {unlockedAchievements.map((achievement) => (
+                  <div key={achievement.id}><Award size={15} /><span>{achievement.title}</span><strong>Unlocked</strong></div>
+                ))}
+              </section>
+            )}
+
+            {readyThemes.length > 0 && (
+              <section className="details-group">
+                <div className="details-group-title">
+                  <ShoppingBag size={17} /><h3>Themes</h3>
+                  <button type="button" onClick={onShop}>View Shop</button>
+                </div>
+                {readyThemes.map((theme) => (
+                  <div key={theme.id}><ShoppingBag size={15} /><span>{theme.name}</span><strong>Ready</strong></div>
+                ))}
+              </section>
+            )}
+
+            <button className="secondary-button" type="button" onClick={onCopy}>
+              <Copy size={18} aria-hidden="true" />
+              <span>Copy Result</span>
+            </button>
+          </section>
+        </div>
       )}
-      <section className="primary-actions">
-        <button className="primary-button" type="button" onClick={onRestart}>
-          <RotateCcw size={20} aria-hidden="true" />
-          <span>Play Again</span>
-        </button>
-        <button className="secondary-button" type="button" onClick={onShop}>
-          <ShoppingBag size={18} aria-hidden="true" />
-          <span>Theme Shop</span>
-        </button>
-        <button className="secondary-button" type="button" onClick={onMissions}>
-          <Target size={18} aria-hidden="true" />
-          <span>Missions</span>
-        </button>
-        <button className="secondary-button" type="button" onClick={onShare}>
-          <Share2 size={18} aria-hidden="true" />
-          <span>Share Result</span>
-        </button>
-        <button className="secondary-button" type="button" onClick={onCopy}>
-          <Copy size={18} aria-hidden="true" />
-          <span>Copy Result</span>
-        </button>
-        <button className="secondary-button" type="button" onClick={onMenu}>
-          <Home size={18} aria-hidden="true" />
-          <span>Menu</span>
-        </button>
-      </section>
-    </main>
+    </>
   );
 }
 
@@ -1555,10 +1658,7 @@ function ResetConfirmModal({ onCancel, onConfirm }) {
 function SplashScreen() {
   return (
     <div className="splash-screen" aria-label="Loading Block Rush">
-      <div className="splash-mark">
-        <i /><i /><i /><i />
-      </div>
-      <div className="splash-logo"><span>Block</span><strong>Rush</strong></div>
+      <img className="splash-brand-logo" src={APP_LOGO} alt="Block Rush" draggable="false" />
       <div className="splash-loader"><i /></div>
     </div>
   );
@@ -1695,6 +1795,7 @@ function App() {
   );
   const [screen, setScreen] = useState("menu");
   const [returnScreen, setReturnScreen] = useState("menu");
+  const [returnPaused, setReturnPaused] = useState(false);
   const [drag, setDrag] = useState(null);
   const [hover, setHover] = useState(null);
   const [activePower, setActivePower] = useState(null);
@@ -1715,6 +1816,8 @@ function App() {
   const [shake, setShake] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const [audioUnlocked, setAudioUnlocked] = useState(false);
+  const [installPrompt, setInstallPrompt] = useState(null);
+  const [standaloneMode, setStandaloneMode] = useState(detectStandaloneMode);
   const boardRef = useRef(null);
   const toastTimer = useRef(null);
   const rewardTimer = useRef(null);
@@ -1737,6 +1840,29 @@ function App() {
   useEffect(() => {
     const timer = window.setTimeout(() => setShowSplash(false), 620);
     return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    const displayMode = window.matchMedia?.("(display-mode: standalone)");
+    const updateStandaloneMode = () => setStandaloneMode(detectStandaloneMode());
+    const handleInstallPrompt = (event) => {
+      event.preventDefault();
+      if (window.sessionStorage.getItem("block-rush-install-dismissed") === "1") return;
+      setInstallPrompt(event);
+    };
+    const handleInstalled = () => {
+      setInstallPrompt(null);
+      setStandaloneMode(true);
+    };
+
+    window.addEventListener("beforeinstallprompt", handleInstallPrompt);
+    window.addEventListener("appinstalled", handleInstalled);
+    displayMode?.addEventListener?.("change", updateStandaloneMode);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleInstallPrompt);
+      window.removeEventListener("appinstalled", handleInstalled);
+      displayMode?.removeEventListener?.("change", updateStandaloneMode);
+    };
   }, []);
 
   useEffect(() => {
@@ -1810,6 +1936,8 @@ function App() {
           rotation: Math.round(Math.random() * 280 - 140),
           scale: (0.68 + Math.random() * 0.82).toFixed(2),
           delay: Math.round(Math.random() * 90),
+          lifetime: Math.round(duration * (0.78 + Math.random() * 0.2)),
+          gravity: preset.float ? -18 - Math.random() * 28 : 12 + Math.random() * 24,
         };
       })(),
     }));
@@ -2028,6 +2156,14 @@ function App() {
         cleared.clearedCells.map(([cellRow, cellCol]) => ({
           row: cellRow,
           col: cellCol,
+          axis:
+            completed.rows.includes(cellRow) && !completed.cols.includes(cellCol)
+              ? "row"
+              : completed.cols.includes(cellCol) && !completed.rows.includes(cellRow)
+                ? "col"
+                : completed.rows.includes(cellRow)
+                  ? "row"
+                  : "col",
           delay: Math.min(
             completed.rows.includes(cellRow) ? cellCol * 18 : Number.POSITIVE_INFINITY,
             completed.cols.includes(cellCol) ? cellRow * 18 : Number.POSITIVE_INFINITY,
@@ -2042,7 +2178,7 @@ function App() {
         top: ((rewardCenter.row + 0.5) / BOARD_SIZE) * 100,
       });
       addParticles(
-        boardClear ? 72 : 18 + completed.count * 12 + comboAfterMove * 5,
+        boardClear ? 44 : Math.min(42, 14 + completed.count * 10 + comboAfterMove * 4),
         boardClear ? [[3.5, 3.5]] : cleared.clearedCells,
         boardClear
           ? {
@@ -2067,9 +2203,19 @@ function App() {
         setClearMarks([]);
         finalizeRunAfterMove(baseRun, cleared.board, piecesAfterPlacement, progress.profile);
         setClearing(false);
-      }, boardClear ? 720 : 470);
+      }, boardClear ? 1050 : 470);
     } else {
       haptic(profile.settings.haptics, 8);
+      addParticles(
+        Math.min(7, piece.cells.length + 2),
+        piece.cells.map(([cellRow, cellCol]) => [row + cellRow, col + cellCol]),
+        {
+          preset: "dust",
+          colors: selectedSkin.visual.particle.colors,
+          float: true,
+        },
+        380,
+      );
       finalizeRunAfterMove(baseRun, placedBoard, piecesAfterPlacement, progress.profile);
     }
     return true;
@@ -2225,12 +2371,15 @@ function App() {
 
   function openSettingsScreen(from) {
     setReturnScreen(from);
+    setReturnPaused(false);
     setConfirmReset(false);
     setScreen("settings");
   }
 
   function backFromPanel() {
     setScreen(returnScreen);
+    if (returnScreen === "game" && returnPaused) setPaused(true);
+    setReturnPaused(false);
   }
 
   function handlePowerup(powerupId) {
@@ -2240,6 +2389,7 @@ function App() {
       notify("Get more in shop");
       setScreen("shop");
       setReturnScreen("game");
+      setReturnPaused(false);
       return;
     }
 
@@ -2458,6 +2608,16 @@ function App() {
     }
   }
 
+  async function handleInstallApp() {
+    if (!installPrompt) return;
+    await installPrompt.prompt();
+    const choice = await installPrompt.userChoice;
+    setInstallPrompt(null);
+    if (choice?.outcome !== "accepted") {
+      window.sessionStorage.setItem("block-rush-install-dismissed", "1");
+    }
+  }
+
   function confirmResetProgress() {
     const nextProfile = createInitialProfile();
     const nextRun = createRun(Math.random, nextProfile.bestScore, nextProfile);
@@ -2480,6 +2640,7 @@ function App() {
       style={shellStyle}
       data-skin={selectedSkin.id}
       data-tone={selectedSkin.tone}
+      data-standalone={standaloneMode ? "true" : "false"}
       onClickCapture={handleGlobalButtonClick}
     >
       <div className="phone-frame">
@@ -2491,14 +2652,17 @@ function App() {
             onNewGame={() => requestPlay(true)}
             onShop={() => {
               setReturnScreen("menu");
+              setReturnPaused(false);
               setScreen("shop");
             }}
             onMissions={() => {
               setReturnScreen("menu");
+              setReturnPaused(false);
               setScreen("missions");
             }}
             onStats={() => {
               setReturnScreen("menu");
+              setReturnPaused(false);
               setScreen("stats");
             }}
             onSettings={() => openSettingsScreen("menu")}
@@ -2554,6 +2718,9 @@ function App() {
             onToggleSetting={toggleSetting}
             onReplayTutorial={replayTutorial}
             onResetProgress={() => setConfirmReset(true)}
+            installAvailable={Boolean(installPrompt) && !standaloneMode}
+            installed={standaloneMode}
+            onInstall={handleInstallApp}
           />
         )}
         {screen === "gameover" && (
@@ -2564,10 +2731,12 @@ function App() {
             onMenu={() => setScreen("menu")}
             onShop={() => {
               setReturnScreen("gameover");
+              setReturnPaused(false);
               setScreen("shop");
             }}
             onMissions={() => {
               setReturnScreen("gameover");
+              setReturnPaused(false);
               setScreen("missions");
             }}
             onShare={() => setShareOpen(true)}
@@ -2587,11 +2756,13 @@ function App() {
           onMissions={() => {
             setPaused(false);
             setReturnScreen("game");
+            setReturnPaused(true);
             setScreen("missions");
           }}
           onShop={() => {
             setPaused(false);
             setReturnScreen("game");
+            setReturnPaused(true);
             setScreen("shop");
           }}
           onMenu={() => {
@@ -2600,7 +2771,10 @@ function App() {
           }}
           onSettings={() => {
             setPaused(false);
-            openSettingsScreen("game");
+            setReturnScreen("game");
+            setReturnPaused(true);
+            setConfirmReset(false);
+            setScreen("settings");
           }}
           onPowerup={(powerupId) => {
             setPaused(false);

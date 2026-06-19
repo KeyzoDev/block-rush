@@ -6,3 +6,16 @@
   from = "/*"
   to = "/index.html"
   status = 200
+
+[[headers]]
+  for = "/manifest.webmanifest"
+
+  [headers.values]
+    Content-Type = "application/manifest+json"
+
+[[headers]]
+  for = "/sw.js"
+
+  [headers.values]
+    Cache-Control = "no-cache"
+    Service-Worker-Allowed = "/"
